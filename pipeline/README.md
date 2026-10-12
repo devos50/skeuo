@@ -1,6 +1,6 @@
 # Skeuo pipeline
 
-Creates and runs virtual devices from IPSWs. A device is a *bundle*: a directory with the device's NAND, NOR and a
+Creates and runs virtual devices from IPSWs. A device is a *bundle*: a directory with the device's disk, NOR and a
 `device.json` (see `skeuo/bundle.py`). Everything iOS writes stays in the bundle, so a device keeps its state between
 runs.
 
@@ -16,13 +16,19 @@ Run the commands from this directory (or put it on `PYTHONPATH`). Only the Pytho
 
 ## What `restore` does
 
-1. Creates a factory-new device with its own identity: a random serial number and MAC addresses (`identity.py`), a
-   formatted, empty NAND (`nand.py`) and a NOR with only the factory data, i.e. syscfg and NVRAM (`nor.py`).
+1. Creates a factory-new device with its own identity: a random serial number and MAC addresses (`identity.py`), an
+   empty disk image, which the emulator presents as a formatted, empty NAND (`nand.py`), and a NOR with only the
+   factory data, i.e. syscfg and NVRAM (`nor.py`).
 2. Boots the emulator in DFU mode and restores like iTunes: iBSS over DFU, iBEC, the restore ramdisk and kernelcache,
    then `restored` partitions the NAND, writes the root filesystem it gets through asr and flashes the NOR images
    from the IPSW (`restore.py`, `restored.py`). This takes about a minute.
 3. Prepares the restored filesystems for the emulator (`prepare.py`): SpringBoard draws in software
    (`LK_ENABLE_MBX2D=0`), and the device is activated (`activation.py`).
+
+The bundle keeps the disk as `disk.img`, a sparse raw disk image that macOS can mount
+(`hdiutil attach -imagekey diskimage-class=CRawDiskImage disk.img`). While the emulator runs, the NAND pages iOS
+writes go to `overlay/`; they are folded into `disk.img` when it stops, or before the next start if it crashed.
+Bundles from before this format (one file per NAND page in `nand/`) are converted when they are opened.
 
 `run` boots the bundle with a window and serves it to libimobiledevice through a built-in usbmuxd
 (`USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`).

@@ -1,18 +1,24 @@
 """
-A device bundle is one virtual device: a directory with its NAND, its NOR and a description.
+A device bundle is one virtual device: a directory with its storage and a description.
 
   <bundle>/device.json   what the device is, its identity and which firmware it was restored with
-  <bundle>/nand/         the NAND, one file per written page (see nand.py)
+  <bundle>/disk.img      the disk that the NAND holds, as a sparse raw disk image (see nand.py)
+  <bundle>/overlay/      while the emulator runs: the NAND pages iOS wrote, folded into disk.img afterwards
   <bundle>/nor.bin       the NOR flash
   <bundle>/logs/         serial and QEMU logs of the last run
 
-The NAND and NOR are the device's persistent storage: everything iOS writes ends up there.
+The disk and NOR are the device's persistent storage: everything iOS writes ends up there.
+
+Format 1 bundles stored the NAND itself, one file per written page in <bundle>/nand/; open() converts them.
 """
 import datetime
 import json
 import os
+import shutil
 
-FORMAT_VERSION = 1
+from . import nand
+
+FORMAT_VERSION = 2
 
 
 class BundleError(Exception):
@@ -23,7 +29,8 @@ class Bundle:
     def __init__(self, path, info):
         self.path = path
         self.info = info
-        self.nand = os.path.join(path, "nand")
+        self.disk = os.path.join(path, "disk.img")
+        self.overlay = os.path.join(path, "overlay")
         self.nor = os.path.join(path, "nor.bin")
         self.logs = os.path.join(path, "logs")
 
@@ -40,6 +47,12 @@ class Bundle:
             json.dump(self.info, f, indent=2)
             f.write("\n")
         os.replace(os.path.join(self.path, "device.json.part"), os.path.join(self.path, "device.json"))
+
+    def fold(self, log=print):
+        """Folds an overlay that a run left behind into the disk."""
+        if os.path.exists(self.overlay):
+            log("writing the changed pages into the disk")
+            nand.fold(self.overlay, self.disk)
 
     def mark_ready(self):
         self.info["state"] = "ready"
@@ -69,10 +82,23 @@ class Bundle:
                 info = json.load(f)
         except FileNotFoundError:
             raise BundleError("%s is not a device bundle (no device.json)" % path)
-        if info.get("format") != FORMAT_VERSION:
+        if info.get("format") not in (1, FORMAT_VERSION):
             raise BundleError("%s has bundle format %s, this version reads %d"
                               % (path, info.get("format"), FORMAT_VERSION))
         bundle = cls(path, info)
         if not bundle.ready:
             raise BundleError("%s was not restored completely; restore it again" % path)
+        if info["format"] == 1:
+            bundle.convert_from_pages()
         return bundle
+
+    def convert_from_pages(self, log=print):
+        """Format 1 -> 2: replaces the one-file-per-page NAND by the disk it holds."""
+        pages = os.path.join(self.path, "nand")
+        if os.path.isdir(pages):
+            log("converting %s to a disk image" % pages)
+            nand.extract(pages, self.disk + ".part")
+            os.replace(self.disk + ".part", self.disk)
+            shutil.rmtree(pages)
+        self.info["format"] = FORMAT_VERSION
+        self.save()

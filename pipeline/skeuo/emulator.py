@@ -32,14 +32,15 @@ class Emulator:
     """dfu: hold the force-DFU GPIO so the bootrom enters DFU mode.
     display: show the QEMU window instead of running headless."""
 
-    def __init__(self, qemu, bootrom, nand, nor, logdir, dfu=False, display=False, wifi_mac=None, extra_args=()):
+    def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, dfu=False, display=False, wifi_mac=None, extra_args=()):
         if not os.path.exists(qemu):
             raise EmulatorError("QEMU not found at %s" % qemu)
         if not os.path.exists(bootrom):
             raise EmulatorError("bootrom not found at %s" % bootrom)
         self.port = free_port()
         self.serial_log = os.path.join(logdir, "serial.log")
-        machine = "iPod-Touch,bootrom=%s,nand=%s,nor=%s,usb-chardev=usb" % (bootrom, nand, nor)
+        machine = "iPod-Touch,bootrom=%s,nand-disk=%s,nand-overlay=%s,nor=%s,usb-chardev=usb" % (
+            bootrom, disk, overlay, nor)
         if dfu:
             machine += ",dfu=on"
         cmd = [

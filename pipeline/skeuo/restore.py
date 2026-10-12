@@ -1,15 +1,15 @@
 """
 Restores a device bundle from an IPSW, the way iTunes restores a new device: the bootrom takes iBSS over DFU, iBSS
 loads iBEC, iBEC boots the restore ramdisk, and restored on the ramdisk partitions the NAND, writes the root
-filesystem it receives through asr and flashes the NOR images. The bundle starts out as a factory-new device: a
-formatted, empty NAND and a NOR with only the factory data.
+filesystem it receives through asr and flashes the NOR images. The bundle starts out as a factory-new device: an
+empty disk (which the emulator presents as a formatted, empty NAND) and a NOR with only the factory data.
 """
 import shutil
 import struct
 import tempfile
 import time
 
-from . import identity, nand, nor, prepare
+from . import identity, nor, prepare
 from .bundle import Bundle
 from .emulator import Emulator, EmulatorError, wait_for
 from .restored import ASRServer, NORServer, RestoreError, run_restore
@@ -105,12 +105,12 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
     bundle = Bundle.create(bundle_path, ipsw, device)
     step = Steps(log)
     try:
-        nand.format(bundle.nand)
+        open(bundle.disk, "wb").close()
         with open(bundle.nor, "wb") as f:
             f.write(nor.factory_nor(identity.syscfg(device), identity.nvram_env(device)))
 
         log("restoring %s as serial number %s" % (ipsw, device["serial_number"]))
-        emu = Emulator(qemu, bootrom, bundle.nand, bundle.nor, bundle.logs, dfu=True, wifi_mac=device["wifi_mac"])
+        emu = Emulator(qemu, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, dfu=True, wifi_mac=device["wifi_mac"])
         try:
             link = emu.connect()
             try:
@@ -123,10 +123,11 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
             raise EmulatorError("USB: %s" % e)
         finally:
             emu.stop()
+        bundle.fold(log=log)
 
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
         try:
-            prepare.prepare(bundle.nand, work, device, ipsw.product, lockdown=lockdown, log=log)
+            prepare.prepare(bundle.disk, work, device, ipsw.product, lockdown=lockdown, log=log)
         finally:
             shutil.rmtree(work, ignore_errors=True)
         bundle.mark_ready()
