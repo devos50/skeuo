@@ -2,11 +2,11 @@
 Makes a freshly restored device boot to SpringBoard in the emulator, by changing the filesystems on its NAND:
 
 - SpringBoard's launch daemon gets LK_ENABLE_MBX2D=0, so LayerKit draws in software.
-- With a Lockdown source, the Lockdown directory of an activated device (activation record, data ark, device keys,
-  pair records) goes to /private/var/root/Library/Lockdown, so the device is activated. A fresh restore is
-  unactivated, and an old activation record cannot be sent to lockdownd again: it must contain the activation
-  randomness that lockdownd generated for that activation. This is a stand-in until Skeuo can activate a device
-  itself.
+- The device is activated by Skeuo's own activation authority (see activation.py): its certificates replace Apple's
+  and the device gets an activation record for its UDID.
+- With a Lockdown source instead, the Lockdown directory of a device that Apple activated (activation record, data
+  ark, device keys, pair records) goes to /private/var/root/Library/Lockdown. That only works for the identity of
+  that device.
 
 The restored image can't be changed before the restore instead: asr on the restore ramdisk checks Apple's signature
 of the root filesystem image. So this takes the disk out of the NAND, changes its partitions and writes a new NAND.
@@ -15,7 +15,7 @@ import os
 import plistlib
 import shutil
 
-from . import hfs, nand
+from . import activation, hfs, nand
 
 SPRINGBOARD_PLIST = "/System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
 LOCKDOWN_IN_ROOTFS = "/private/var/root/Library/Lockdown"
@@ -53,7 +53,8 @@ def lockdown_files(source):
     return hfs.read_tree(source, LOCKDOWN_IN_ROOTFS)
 
 
-def prepare(nand_dir, workdir, lockdown=None, log=print):
+def prepare(nand_dir, workdir, device, product_type, lockdown=None, log=print):
+    """device: the bundle's identity, with the UDID the restore reported."""
     """Rewrites the NAND at nand_dir with the changed filesystems."""
     hfs.check_supported()
     disk = os.path.join(workdir, "disk.img")
@@ -71,9 +72,16 @@ def prepare(nand_dir, workdir, lockdown=None, log=print):
     log("letting SpringBoard draw in software")
     plist = plistlib.loads(hfs.read_file(images[SYSTEM_PARTITION], SPRINGBOARD_PLIST))
     plist.setdefault("EnvironmentVariables", {})["LK_ENABLE_MBX2D"] = "0"
-    hfs.add_files(images[SYSTEM_PARTITION], {SPRINGBOARD_PLIST: plistlib.dumps(plist)})
+    system_files = {SPRINGBOARD_PLIST: plistlib.dumps(plist)}
+    if not lockdown:
+        system_files.update(activation.system_files())
+    hfs.add_files(images[SYSTEM_PARTITION], system_files)
 
-    if lockdown:
+    if not lockdown:
+        log("activating %s" % device["udid"])
+        hfs.add_files(images[DATA_PARTITION],
+                      activation.data_files(device["udid"], device["serial_number"], product_type))
+    else:
         files = lockdown_files(lockdown)
         if not files:
             raise hfs.HFSError("no Lockdown files in %s" % lockdown)

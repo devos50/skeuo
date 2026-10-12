@@ -9,7 +9,7 @@ import struct
 import tempfile
 import time
 
-from . import nand, nor, prepare
+from . import identity, nand, nor, prepare
 from .bundle import Bundle
 from .emulator import Emulator, EmulatorError, wait_for
 from .restored import ASRServer, NORServer, RestoreError, run_restore
@@ -91,31 +91,34 @@ def run_restored(emu, ipsw, log):
         "NORData": NORServer(*ipsw.nor_images(), log=log),
     }
     try:
-        status = run_restore(link, handlers, log=log)
+        status, udid = run_restore(link, handlers, log=log)
     except (RestoreError, MuxError) as e:
         raise EmulatorError("restore: %s" % e)
     if status != 0:
         raise EmulatorError("restore failed with status %s" % status)
+    return udid
 
 
 def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
     """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object)."""
-    bundle = Bundle.create(bundle_path, ipsw)
+    device = identity.generate()
+    bundle = Bundle.create(bundle_path, ipsw, device)
     step = Steps(log)
     try:
         nand.format(bundle.nand)
         with open(bundle.nor, "wb") as f:
-            f.write(nor.factory_nor())
+            f.write(nor.factory_nor(identity.syscfg(device), identity.nvram_env(device)))
 
-        log("restoring %s" % ipsw)
-        emu = Emulator(qemu, bootrom, bundle.nand, bundle.nor, bundle.logs, dfu=True)
+        log("restoring %s as serial number %s" % (ipsw, device["serial_number"]))
+        emu = Emulator(qemu, bootrom, bundle.nand, bundle.nor, bundle.logs, dfu=True, wifi_mac=device["wifi_mac"])
         try:
             link = emu.connect()
             try:
                 boot_ramdisk(emu, link, ipsw, step)
             finally:
                 link.close()
-            run_restored(emu, ipsw, log)
+            device["udid"] = run_restored(emu, ipsw, log)
+            bundle.save()
         except USBError as e:
             raise EmulatorError("USB: %s" % e)
         finally:
@@ -123,7 +126,7 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
 
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
         try:
-            prepare.prepare(bundle.nand, work, lockdown=lockdown, log=log)
+            prepare.prepare(bundle.nand, work, device, ipsw.product, lockdown=lockdown, log=log)
         finally:
             shutil.rmtree(work, ignore_errors=True)
         bundle.mark_ready()

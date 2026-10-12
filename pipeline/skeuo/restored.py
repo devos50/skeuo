@@ -267,6 +267,8 @@ class NORServer:
 
 
 def run_restore(link, data_handlers=None, log=print):
+    """Runs the restore and returns (status, UDID). The device's USB serial number is its UDID, in restore mode as
+    well as when iOS runs."""
     mux = MuxDevice(link)
     try:
         log("mux version %d.%d, serial %s" % (*mux.handshake(), mux.serial))
@@ -276,7 +278,7 @@ def run_restore(link, data_handlers=None, log=print):
             log("restored: protocol %s, serial %s" % (info["RestoreProtocolVersion"], info["SerialNumber"]))
             if info["HardwareInfo"]:
                 log("hardware: %s" % ", ".join("%s=%s" % kv for kv in sorted(info["HardwareInfo"].items())))
-            return client.run()
+            return client.run(), mux.serial
         finally:
             client.close()
     finally:

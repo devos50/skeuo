@@ -32,7 +32,7 @@ class Emulator:
     """dfu: hold the force-DFU GPIO so the bootrom enters DFU mode.
     display: show the QEMU window instead of running headless."""
 
-    def __init__(self, qemu, bootrom, nand, nor, logdir, dfu=False, display=False, extra_args=()):
+    def __init__(self, qemu, bootrom, nand, nor, logdir, dfu=False, display=False, wifi_mac=None, extra_args=()):
         if not os.path.exists(qemu):
             raise EmulatorError("QEMU not found at %s" % qemu)
         if not os.path.exists(bootrom):
@@ -47,6 +47,9 @@ class Emulator:
             "-serial", "file:" + self.serial_log,
             "-chardev", "socket,id=usb,host=127.0.0.1,port=%d,server=on,wait=off,nodelay=on" % self.port,
         ]
+        if wifi_mac:
+            # the BCM4325 model reports the NIC's address as its own
+            cmd += ["-nic", "user,model=bcm4325,mac=%s" % wifi_mac.lower()]
         if not display:
             cmd += ["-display", "none"]
         cmd += list(extra_args)

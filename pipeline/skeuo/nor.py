@@ -10,19 +10,6 @@ SYSCFG_OFFSET = 0x4000
 NVRAM_OFFSET = 0xFC000
 NVRAM_SIZE = 0x2000
 
-DEFAULT_SYSCFG = {
-    "Mod#": "MA623",
-    "Regn": "B/LL",
-    "SrNm": "1A8478BH203",
-    "Batt": "690476146348",
-}
-
-DEFAULT_ENV = {
-    "debug-uarts": "1",
-    "btaddr": "00:23:32:6B:38:E2",
-    "wifiaddr": "00:23:32:6E:AA:10",
-}
-
 
 def fourcc(tag):
     # a C multi-character constant like 'SCfg', stored as a little endian word
@@ -66,9 +53,10 @@ def nvram(env):
     return bytes(data)
 
 
-def factory_nor(syscfg_entries=None, env=None):
+def factory_nor(syscfg_entries, env):
+    """syscfg_entries and env come from identity.py."""
     nor = bytearray(NOR_SIZE)
-    cfg = syscfg(syscfg_entries or DEFAULT_SYSCFG)
+    cfg = syscfg(syscfg_entries)
     nor[SYSCFG_OFFSET:SYSCFG_OFFSET + len(cfg)] = cfg
-    nor[NVRAM_OFFSET:NVRAM_OFFSET + NVRAM_SIZE] = nvram(env or DEFAULT_ENV)
+    nor[NVRAM_OFFSET:NVRAM_OFFSET + NVRAM_SIZE] = nvram(env)
     return bytes(nor)

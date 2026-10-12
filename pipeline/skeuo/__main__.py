@@ -60,7 +60,8 @@ def cmd_run(parser, args):
     bundle = Bundle.open(args.bundle)
     os.makedirs(bundle.logs, exist_ok=True)
     emu = Emulator(args.qemu, args.bootrom, bundle.nand, bundle.nor, bundle.logs,
-                   display=not args.headless, extra_args=args.qemu_args)
+                   display=not args.headless, wifi_mac=bundle.info["identity"]["wifi_mac"],
+                   extra_args=args.qemu_args)
     log("running %s (logs in %s)" % (bundle, bundle.logs))
     if args.usbmuxd:
         start_bridge(args.usbmuxd, port=emu.port, pair_records=args.pair_records)
@@ -90,8 +91,8 @@ def main():
     p.add_argument("ipsw", help=".ipsw file or extracted IPSW directory")
     p.add_argument("bundle", help="directory for the new device")
     add_emulator_arguments(p)
-    p.add_argument("--lockdown", help="Lockdown directory of an activated device, or a filesystem image with it "
-                                      "(stand-in for activation)")
+    p.add_argument("--lockdown", help="instead of Skeuo's own activation: the Lockdown directory of a device Apple "
+                                      "activated, or a filesystem image with it (only valid for that device)")
     p.add_argument("--nor-images", help="NOR images (llb.img3, iboot.img3, ...) for IPSW extractions without "
                                         "Firmware/all_flash")
     p.set_defaults(func=cmd_restore)

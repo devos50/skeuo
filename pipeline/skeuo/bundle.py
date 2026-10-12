@@ -1,7 +1,7 @@
 """
 A device bundle is one virtual device: a directory with its NAND, its NOR and a description.
 
-  <bundle>/device.json   what the device is and which firmware it was restored with
+  <bundle>/device.json   what the device is, its identity and which firmware it was restored with
   <bundle>/nand/         the NAND, one file per written page (see nand.py)
   <bundle>/nor.bin       the NOR flash
   <bundle>/logs/         serial and QEMU logs of the last run
@@ -46,7 +46,7 @@ class Bundle:
         self.save()
 
     @classmethod
-    def create(cls, path, ipsw):
+    def create(cls, path, ipsw, identity):
         if os.path.exists(path) and os.listdir(path):
             raise BundleError("%s exists and is not empty" % path)
         os.makedirs(os.path.join(path, "logs"), exist_ok=True)
@@ -55,6 +55,7 @@ class Bundle:
             "product": ipsw.product,
             "board": ipsw.board,
             "firmware": {"version": ipsw.version, "build": ipsw.build},
+            "identity": identity,
             "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "state": "restoring",
         })
