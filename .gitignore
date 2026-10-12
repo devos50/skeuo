@@ -1,0 +1,8 @@
+# User-supplied firmware and generated device bundles never belong in the repo
+*.ipsw
+*.img3
+*.dmg
+bundles/
+build/
+dist/
+.DS_Store

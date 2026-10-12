@@ -1,0 +1,4 @@
+[submodule "emulator"]
+	path = emulator
+	url = git@github.com:devos50/qemu-ios.git
+	branch = skeuo
