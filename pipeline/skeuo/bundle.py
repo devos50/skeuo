@@ -17,6 +17,7 @@ import os
 import shutil
 
 from . import nand
+from .ipsw import NAND_EPOCHS
 
 FORMAT_VERSION = 2
 
@@ -37,6 +38,14 @@ class Bundle:
     @property
     def ready(self):
         return self.info.get("state") == "ready"
+
+    @property
+    def nand_epoch(self):
+        """The NAND driver epoch of the bundle's firmware, which the emulator formats the NAND for."""
+        build = self.info["firmware"]["build"]
+        if build not in NAND_EPOCHS:
+            raise BundleError("%s has firmware %s, which Skeuo doesn't support" % (self.path, build))
+        return NAND_EPOCHS[build]
 
     def __str__(self):
         fw = self.info["firmware"]

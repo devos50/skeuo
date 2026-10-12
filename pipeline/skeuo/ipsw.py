@@ -8,6 +8,12 @@ import shutil
 import zipfile
 
 SUPPORTED_PRODUCTS = {"iPod2,1"}
+# The firmware the emulator has GID keys for, by build, with the security epoch of its NAND driver. The NAND signature
+# carries that epoch, and iBoot only boots from a NAND formatted for its own epoch.
+NAND_EPOCHS = {
+    "5F138": 1,  # iPhone OS 2.1.1
+    "5G77a": 2,  # iPhone OS 2.2
+}
 
 
 class IPSWError(Exception):
@@ -42,6 +48,9 @@ class IPSW:
             raise IPSWError("%s is firmware for %s; supported: %s"
                             % (path, self.product, ", ".join(sorted(SUPPORTED_PRODUCTS))))
         self.board = self.plist["DeviceMap"][0]["BoardConfig"]
+        if self.build not in NAND_EPOCHS:
+            raise IPSWError("%s is %s %s (%s); supported builds: %s"
+                            % (path, self.product, self.version, self.build, ", ".join(sorted(NAND_EPOCHS))))
 
     def __str__(self):
         return "%s %s (%s)" % (self.product, self.version, self.build)

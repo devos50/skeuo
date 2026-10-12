@@ -60,7 +60,7 @@ def cmd_run(parser, args):
     bundle = Bundle.open(args.bundle)
     os.makedirs(bundle.logs, exist_ok=True)
     bundle.fold(log=log)  # left behind by a run that did not end cleanly
-    emu = Emulator(args.qemu, args.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs,
+    emu = Emulator(args.qemu, args.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
                    display=not args.headless, wifi_mac=bundle.info["identity"]["wifi_mac"],
                    extra_args=args.qemu_args)
     log("running %s (logs in %s)" % (bundle, bundle.logs))

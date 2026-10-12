@@ -110,7 +110,8 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
             f.write(nor.factory_nor(identity.syscfg(device), identity.nvram_env(device)))
 
         log("restoring %s as serial number %s" % (ipsw, device["serial_number"]))
-        emu = Emulator(qemu, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, dfu=True, wifi_mac=device["wifi_mac"])
+        emu = Emulator(qemu, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
+                       dfu=True, wifi_mac=device["wifi_mac"])
         try:
             link = emu.connect()
             try:
