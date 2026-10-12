@@ -1,0 +1,133 @@
+"""
+Restores a device bundle from an IPSW, the way iTunes restores a new device: the bootrom takes iBSS over DFU, iBSS
+loads iBEC, iBEC boots the restore ramdisk, and restored on the ramdisk partitions the NAND, writes the root
+filesystem it receives through asr and flashes the NOR images. The bundle starts out as a factory-new device: a
+formatted, empty NAND and a NOR with only the factory data.
+"""
+import shutil
+import struct
+import tempfile
+import time
+
+from . import nand, nor, prepare
+from .bundle import Bundle
+from .emulator import Emulator, EmulatorError, wait_for
+from .restored import ASRServer, NORServer, RestoreError, run_restore
+from .usb.dfu import DFU_PID, RECOVERY_PID, command, dfu_upload, enumerate_device, set_configuration, upload
+from .usb.link import USBError, USBNoDevice, USBTimeout
+from .usb.mux import MuxError
+
+RESTORED_TIMEOUT = 120
+
+
+class Steps:
+    def __init__(self, log):
+        self.log = log
+
+    def __call__(self, name, fn):
+        start = time.monotonic()
+        result = fn()
+        self.log("ok    %-36s %.2f s" % (name, time.monotonic() - start))
+        return result
+
+
+def boot_ramdisk(emu, link, ipsw, step):
+    ibss = ipsw.dfu_image("iBSS")
+    ibec = ipsw.dfu_image("iBEC")
+    device_tree = ipsw.device_tree()
+    ramdisk = ipsw.restore_ramdisk()
+    kernel = ipsw.kernelcache()
+
+    def to_recovery():
+        enumerate_device(link, DFU_PID)
+        dfu_upload(link, ibss)
+        wait_for(lambda: "Entering recovery mode" in emu.serial(), 20, "iBSS to enter recovery mode")
+
+    def ibss_loads_ibec():
+        enumerate_device(link, RECOVERY_PID)
+        set_configuration(link)
+        upload(link, ibec)
+        try:
+            command(link, "go")
+        except (USBNoDevice, USBTimeout):
+            pass
+        wait_for(lambda: "iBEC for" in emu.serial(), 20, "iBEC to start")
+
+    def ibec_ready():
+        enumerate_device(link, RECOVERY_PID)
+        set_configuration(link)
+
+    def load_device_tree():
+        upload(link, device_tree)
+        command(link, "devicetree", timeout=30)
+
+    def load_ramdisk():
+        upload(link, ramdisk)
+        command(link, "ramdisk", timeout=30)
+
+    def boot():
+        try:
+            command(link, "bootx", timeout=30)
+        except (USBNoDevice, USBTimeout):
+            pass
+
+    step("DFU upload of iBSS", to_recovery)
+    step("iBSS loads iBEC", ibss_loads_ibec)
+    step("iBEC enumerates", ibec_ready)
+    step("upload device tree", load_device_tree)
+    step("upload restore ramdisk", load_ramdisk)
+    step("upload kernelcache", lambda: upload(link, kernel))
+    step("bootx", boot)
+
+
+def run_restored(emu, ipsw, log):
+    link = emu.connect()
+    start = time.monotonic()
+    desc = link.wait_for_device(timeout=RESTORED_TIMEOUT)
+    log("ok    restore ramdisk on USB, %04x:%04x         %.2f s"
+        % (*struct.unpack_from("<HH", desc, 8), time.monotonic() - start))
+    handlers = {
+        "SystemImageData": ASRServer(ipsw.system_image(), log=log),
+        "NORData": NORServer(*ipsw.nor_images(), log=log),
+    }
+    try:
+        status = run_restore(link, handlers, log=log)
+    except (RestoreError, MuxError) as e:
+        raise EmulatorError("restore: %s" % e)
+    if status != 0:
+        raise EmulatorError("restore failed with status %s" % status)
+
+
+def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
+    """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object)."""
+    bundle = Bundle.create(bundle_path, ipsw)
+    step = Steps(log)
+    try:
+        nand.format(bundle.nand)
+        with open(bundle.nor, "wb") as f:
+            f.write(nor.factory_nor())
+
+        log("restoring %s" % ipsw)
+        emu = Emulator(qemu, bootrom, bundle.nand, bundle.nor, bundle.logs, dfu=True)
+        try:
+            link = emu.connect()
+            try:
+                boot_ramdisk(emu, link, ipsw, step)
+            finally:
+                link.close()
+            run_restored(emu, ipsw, log)
+        except USBError as e:
+            raise EmulatorError("USB: %s" % e)
+        finally:
+            emu.stop()
+
+        work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
+        try:
+            prepare.prepare(bundle.nand, work, lockdown=lockdown, log=log)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        bundle.mark_ready()
+    except BaseException:
+        log("restore failed; the logs are in %s" % bundle.logs)
+        raise
+    return bundle

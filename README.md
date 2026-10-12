@@ -6,8 +6,9 @@ Skeuo is the product around an emulator. The emulator is a QEMU fork that lives 
 [`skeuo` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/skeuo) and is
 pinned here as the `emulator/` submodule.
 
-Status: early. The emulator boots the iPod touch 2G (S5L8720, `n72ap`) to SpringBoard; this
-repo does not have a usable app yet.
+Status: early. The emulator boots the iPod touch 2G (S5L8720, `n72ap`) to SpringBoard, and
+`pipeline/` turns an IPSW into a device with one command (see [pipeline/README.md](pipeline/README.md)).
+There is no app yet.
 
 ## Layout
 
