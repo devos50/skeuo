@@ -41,6 +41,20 @@ plain files on the root filesystem, so Skeuo replaces them with its own activati
 (`skeuo/activation/`, made by `tools/make_activation_ca.py`) and writes a record it signed for the device's UDID.
 The UDID is the USB serial number the device reports during the restore. Its keys mean nothing to real devices.
 
+From iPhone OS 3.0 on, Security pins the root of the device certificate's chain to Apple's, so Skeuo's own device
+certificate no longer verifies. lockdownd doesn't check that the device certificate belongs to the device, though, so
+a certificate Apple issued to any device works, next to Skeuo's signed account token. Pass one to `restore`, as a PEM
+file or as the activation record of a device Apple activated
+(`/private/var/root/Library/Lockdown/activation_records/pod_record.plist`):
+
+```bash
+python3 -m skeuo restore iPod2,1_4.0_8A293_Restore.ipsw ~/Skeuo/ipod-4.0 --device-certificate pod_record.plist
+```
+
+The certificate is only accepted within its validity period, so when it has expired, `run` starts the device's
+clock (QEMU `-rtc base=`) a month before its expiry date. Without a device certificate, 3.0 boots Unactivated (still
+usable) and 4.0 to the "Connect to iTunes" screen.
+
 ## Supported firmware
 
 iPod touch 2G (`iPod2,1`): iPhone OS 2.1.1 (5F138), 2.2 (5G77a), 3.0 (7A341) and iOS 4.0 (8A293). Each needs the image keys in the
@@ -57,8 +71,9 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
 
 - The bootrom is Apple's code, so it is not included.
 - Preparing the filesystems uses `hdiutil`, so `restore` runs on macOS only for now.
-- Activation is verified on 2.1.1 and 2.2. 3.0 stays Unactivated: its lockdownd only accepts device certificates whose
+- Activation with Skeuo's own certificates is verified on 2.1.1 and 2.2. 3.0 stays Unactivated: its lockdownd only accepts device certificates whose
   chain ends at Apple's root or factory CA (Security pins their SHA-1), so replacing the certificate files doesn't help.
   An unactivated iPod is still usable on 3.0, because lockdownd only enables the brick state on devices with a
   baseband. 4.0 has the same certificate check but enables the brick state on the iPod too, so it boots to the
-  "Connect to iTunes" activation screen.
+  "Connect to iTunes" activation screen. 4.0 activates with a device certificate from Apple (see Activation); 3.0
+  should too, but that is not verified yet.

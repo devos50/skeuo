@@ -13,10 +13,19 @@ Both certificates are plain files on the root filesystem, so Skeuo puts its own 
 (see tools/make_activation_ca.py) and writes a record it signed itself to
 /var/root/Library/Lockdown/activation_records/pod_record.plist. lockdownd verifies that record at boot.
 
+From iPhone OS 3.0 on, Security pins the anchor of the device certificate (Apple's iPhone CA, or the factory CA), so
+Skeuo's device CA doesn't pass anymore. lockdownd doesn't check that the device certificate belongs to the device,
+though: a record with a device certificate that Apple issued to any device, and Apple's iPhoneDeviceCA.pem left in
+place, verifies (load_device_certificate). It has to be in its validity period on the device's clock (see
+clock_date), while the expired Apple intermediates are accepted. On 4.0 that is the only way to activate an iPod:
+lockdownd puts an iPod without a verified record in the brick state.
+
 A fresh device also gets a data ark with the state that iTunes leaves behind. Without a cached activation state
 lockdownd enables the "brick state" when it starts, and for an iPod it never disables it again, so SpringBoard would
 keep showing "Connect to iTunes".
 """
+import base64
+import datetime
 import hashlib
 import json
 import os
@@ -41,6 +50,10 @@ INITIAL_DATA_ARK = {
 
 # DER DigestInfo prefix of a SHA-1 hash, for PKCS#1 v1.5 signatures
 SHA1_DIGEST_INFO = bytes.fromhex("3021300906052b0e03021a05000414")
+
+
+class ActivationError(Exception):
+    pass
 
 
 def _read(name):
@@ -80,25 +93,94 @@ def account_token(udid, serial_number, product_type):
     return ("{\n" + "".join("\t%s = %s;\n" % (quote(k), v) for k, v in fields) + "}").encode()
 
 
-def activation_record(udid, serial_number, product_type):
+def activation_record(udid, serial_number, product_type, device_certificate=None):
+    """device_certificate: a PEM certificate Apple issued to a device, instead of Skeuo's."""
     key = json.loads(_read("activation_key.json"))
     token = account_token(udid, serial_number, product_type)
     return plistlib.dumps({
         "AccountToken": token,
         "AccountTokenCertificate": _read("activation.pem"),
         "AccountTokenSignature": sign_sha1(token, key),
-        "DeviceCertificate": _read("device.pem"),
+        "DeviceCertificate": device_certificate or _read("device.pem"),
         "LDActivationVersion": 2,
     })
 
 
-def system_files():
-    """The certificates that replace Apple's on the system partition."""
-    return {ACTIVATION_CERT: _read("activation.pem"), DEVICE_CA_CERT: _read("device_ca.pem"),
-            FACTORY_ACTIVATION_CERT: _read("activation.pem")}
+def system_files(apple_device_certificate=False):
+    """The certificates that replace Apple's on the system partition. With a device certificate from Apple, Apple's
+    device CA stays."""
+    files = {ACTIVATION_CERT: _read("activation.pem"), FACTORY_ACTIVATION_CERT: _read("activation.pem")}
+    if not apple_device_certificate:
+        files[DEVICE_CA_CERT] = _read("device_ca.pem")
+    return files
 
 
-def data_files(udid, serial_number, product_type):
+def data_files(udid, serial_number, product_type, device_certificate=None):
     """The activation record and the initial data ark, for the data partition of a freshly restored device."""
-    return {RECORD: activation_record(udid, serial_number, product_type),
+    return {RECORD: activation_record(udid, serial_number, product_type, device_certificate),
             DATA_ARK: plistlib.dumps(INITIAL_DATA_ARK)}
+
+
+def _der(data, offset):
+    """The (tag, value start, value end) of the DER element at offset."""
+    tag, length = data[offset], data[offset + 1]
+    offset += 2
+    if length & 0x80:
+        n = length & 0x7F
+        length = int.from_bytes(data[offset:offset + n], "big")
+        offset += n
+    return tag, offset, offset + length
+
+
+def _der_time(tag, value):
+    text = value.decode()
+    if tag == 0x17:  # UTCTime, YYMMDDHHMMSSZ
+        year = int(text[:2])
+        text = ("19" if year >= 50 else "20") + text
+    return datetime.datetime.strptime(text, "%Y%m%d%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+
+
+def certificate_validity(pem):
+    """(not before, not after) of a PEM certificate."""
+    lines = [line for line in pem.decode().splitlines() if line and not line.startswith("-----")]
+    der = base64.b64decode("".join(lines))
+    _, pos, _ = _der(der, 0)        # into Certificate
+    _, pos, _ = _der(der, pos)      # into tbsCertificate
+    tag, _, end = _der(der, pos)
+    if tag == 0xA0:                 # [0] version (absent in v1 certificates)
+        pos = end
+    for _ in range(3):              # serial number, signature algorithm, issuer
+        _, _, pos = _der(der, pos)
+    _, pos, _ = _der(der, pos)      # into validity
+    t1, s1, e1 = _der(der, pos)
+    t2, s2, e2 = _der(der, e1)
+    return _der_time(t1, der[s1:e1]), _der_time(t2, der[s2:e2])
+
+
+def load_device_certificate(path):
+    """The device certificate in path: a PEM certificate, or an activation record (pod_record.plist) with one."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if not data.lstrip().startswith(b"-----BEGIN"):
+        try:
+            data = plistlib.loads(data)["DeviceCertificate"]
+        except Exception:
+            raise ActivationError("%s is neither a PEM certificate nor an activation record" % path)
+    try:
+        certificate_validity(data)
+    except Exception:
+        raise ActivationError("can't read the certificate in %s" % path)
+    return data
+
+
+def clock_date(validity, now=None):
+    """None if the device can use the host's date with a device certificate valid in validity ((not before, not after)
+    as ISO dates), otherwise the date (YYYY-MM-DD) to start the device's clock at: a month before the certificate
+    expires, or the day after it became valid when it was valid for less than two months."""
+    not_before, not_after = (datetime.datetime.fromisoformat(v) for v in validity)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    margin = datetime.timedelta(days=1)
+    if not_before + margin <= now <= not_after - margin:
+        return None
+    date = max(not_after - datetime.timedelta(days=30), not_before + margin)
+    return date.strftime("%Y-%m-%d")

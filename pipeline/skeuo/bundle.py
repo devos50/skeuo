@@ -16,7 +16,7 @@ import json
 import os
 import shutil
 
-from . import nand
+from . import activation, nand
 from .ipsw import NAND_EPOCHS
 
 FORMAT_VERSION = 2
@@ -46,6 +46,15 @@ class Bundle:
         if build not in NAND_EPOCHS:
             raise BundleError("%s has firmware %s, which Skeuo doesn't support" % (self.path, build))
         return NAND_EPOCHS[build]
+
+    @property
+    def clock_date(self):
+        """The date to start the device's clock at (YYYY-MM-DD), or None for the host's date. A device activated with
+        a device certificate from Apple needs a date in its validity period."""
+        validity = self.info.get("device_certificate")
+        if not validity:
+            return None
+        return activation.clock_date((validity["not_before"], validity["not_after"]))
 
     def __str__(self):
         fw = self.info["firmware"]

@@ -9,7 +9,7 @@ import struct
 import tempfile
 import time
 
-from . import identity, nor, prepare
+from . import activation, identity, nor, prepare
 from .bundle import Bundle
 from .emulator import Emulator, EmulatorError, wait_for
 from .restored import ASRServer, KernelCacheServer, NORServer, RestoreError, run_restore
@@ -105,10 +105,17 @@ def run_restored(emu, ipsw, log):
     return udid
 
 
-def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
-    """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object)."""
+def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, device_certificate=None, log=print):
+    """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object). device_certificate: a PEM device
+    certificate from Apple to activate with (see activation.py)."""
     device = identity.generate()
     bundle = Bundle.create(bundle_path, ipsw, device)
+    if device_certificate:
+        # run keeps the device's clock within the certificate's validity
+        bundle.info["device_certificate"] = {
+            key: date.isoformat() for key, date in
+            zip(("not_before", "not_after"), activation.certificate_validity(device_certificate))}
+        bundle.save()
     step = Steps(log)
     try:
         open(bundle.disk, "wb").close()
@@ -134,7 +141,8 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, log=print):
 
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
         try:
-            prepare.prepare(bundle.disk, work, device, ipsw.product, lockdown=lockdown, log=log)
+            prepare.prepare(bundle.disk, work, device, ipsw.product, lockdown=lockdown,
+                            device_certificate=device_certificate, log=log)
         finally:
             shutil.rmtree(work, ignore_errors=True)
         bundle.mark_ready()

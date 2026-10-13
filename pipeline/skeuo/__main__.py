@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 
+from .activation import ActivationError, load_device_certificate
 from .bundle import Bundle, BundleError
 from .emulator import Emulator, EmulatorError
 from .hfs import HFSError
@@ -45,10 +46,14 @@ def check_emulator_arguments(parser, args):
 
 def cmd_restore(parser, args):
     check_emulator_arguments(parser, args)
+    if args.device_certificate and args.lockdown:
+        parser.error("--device-certificate and --lockdown exclude each other")
+    device_certificate = load_device_certificate(args.device_certificate) if args.device_certificate else None
     workdir = tempfile.mkdtemp(prefix="skeuo-ipsw.")
     try:
         ipsw = IPSW(args.ipsw, workdir, nor_images=args.nor_images)
-        bundle = restore(ipsw, args.bundle, args.qemu, args.bootrom, lockdown=args.lockdown, log=log)
+        bundle = restore(ipsw, args.bundle, args.qemu, args.bootrom, lockdown=args.lockdown,
+                         device_certificate=device_certificate, log=log)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     log("%s is ready; start it with: python3 -m skeuo run %s" % (bundle, args.bundle))
@@ -60,10 +65,16 @@ def cmd_run(parser, args):
     bundle = Bundle.open(args.bundle)
     os.makedirs(bundle.logs, exist_ok=True)
     bundle.fold(log=log)  # left behind by a run that did not end cleanly
+    extra_args = list(args.qemu_args)
+    clock_date = bundle.clock_date
+    if clock_date and not any(arg.startswith("-rtc") for arg in extra_args):
+        extra_args = ["-rtc", "base=" + clock_date] + extra_args
     emu = Emulator(args.qemu, args.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
                    display=not args.headless, wifi_mac=bundle.info["identity"]["wifi_mac"],
-                   extra_args=args.qemu_args)
+                   extra_args=extra_args)
     log("running %s (logs in %s)" % (bundle, bundle.logs))
+    if clock_date:
+        log("the device's clock starts at %s, within the validity of its device certificate" % clock_date)
     if args.usbmuxd:
         start_bridge(args.usbmuxd, port=emu.port, pair_records=args.pair_records)
         log("for libimobiledevice: export USBMUXD_SOCKET_ADDRESS=%s" % args.usbmuxd)
@@ -95,6 +106,10 @@ def main():
     add_emulator_arguments(p)
     p.add_argument("--lockdown", help="instead of Skeuo's own activation: the Lockdown directory of a device Apple "
                                       "activated, or a filesystem image with it (only valid for that device)")
+    p.add_argument("--device-certificate", metavar="FILE",
+                   help="a device certificate Apple issued (PEM, or a device's activation record "
+                        "pod_record.plist) to activate with; needed from iPhone OS 3.0 on. The device's clock is "
+                        "kept within its validity")
     p.add_argument("--nor-images", help="NOR images (llb.img3, iboot.img3, ...) for IPSW extractions without "
                                         "Firmware/all_flash")
     p.set_defaults(func=cmd_restore)
@@ -112,7 +127,7 @@ def main():
     args = parser.parse_args()
     try:
         return args.func(parser, args)
-    except (BundleError, EmulatorError, HFSError, IPSWError, NANDError) as e:
+    except (ActivationError, BundleError, EmulatorError, HFSError, IPSWError, NANDError) as e:
         print("skeuo: %s" % e, file=sys.stderr)
         return 1
     except KeyboardInterrupt:

@@ -34,9 +34,10 @@ def lockdown_files(source):
     return hfs.read_tree(source, LOCKDOWN_IN_ROOTFS)
 
 
-def prepare(disk, workdir, device, product_type, lockdown=None, log=print):
+def prepare(disk, workdir, device, product_type, lockdown=None, device_certificate=None, log=print):
     """Changes the filesystems on the disk image of a restored device that never booted. device: the bundle's
-    identity, with the UDID the restore reported."""
+    identity, with the UDID the restore reported. device_certificate: a PEM device certificate from Apple for the
+    activation record (see activation.py)."""
     hfs.check_supported()
     partitions = {number: (start, size) for number, start, size in nand.partitions(disk)}
     images = {}
@@ -52,13 +53,14 @@ def prepare(disk, workdir, device, product_type, lockdown=None, log=print):
     plist.setdefault("EnvironmentVariables", {})["LK_ENABLE_MBX2D"] = "0"
     system_files = {SPRINGBOARD_PLIST: plistlib.dumps(plist)}
     if not lockdown:
-        system_files.update(activation.system_files())
+        system_files.update(activation.system_files(apple_device_certificate=device_certificate is not None))
     hfs.add_files(images[SYSTEM_PARTITION], system_files)
 
     if not lockdown:
         log("activating %s" % device["udid"])
         hfs.add_files(images[DATA_PARTITION],
-                      activation.data_files(device["udid"], device["serial_number"], product_type))
+                      activation.data_files(device["udid"], device["serial_number"], product_type,
+                                            device_certificate))
     else:
         files = lockdown_files(lockdown)
         if not files:
