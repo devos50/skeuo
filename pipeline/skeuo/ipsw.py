@@ -14,6 +14,7 @@ NAND_EPOCHS = {
     "5F138": 1,  # iPhone OS 2.1.1
     "5G77a": 2,  # iPhone OS 2.2
     "7A341": 3,  # iPhone OS 3.0
+    "8A293": 4,  # iOS 4.0
 }
 
 
@@ -94,15 +95,26 @@ class IPSW:
         return self.read(self.plist["RestoreRamDisks"]["Update" if update else "User"])
 
     def kernelcache(self):
-        return self.read(self.plist["RestoreKernelCaches"]["Release"])
+        """The kernelcache that boots the restore ramdisk. 4.0's Restore.plist names a kernelcache.release.s5l8720x
+        that the IPSW doesn't ship; the system one (kernelcache.release.n72) boots the ramdisk too."""
+        name = self.plist["RestoreKernelCaches"]["Release"]
+        if not self.exists(name):
+            name = self._system_kernelcache_name() or name
+        return self.read(name)
 
     def system_kernelcache(self):
         """The kernelcache that boots the restored system. From 3.0 on it lives on the root filesystem, and restored
         asks for it during the restore."""
-        caches = self.plist.get("KernelCachesByPlatform", {})
-        if len(caches) == 1:
-            return self.read(next(iter(caches.values()))["Release"])
-        return self.kernelcache()
+        name = self._system_kernelcache_name()
+        return self.read(name) if name else self.kernelcache()
+
+    def _system_kernelcache_name(self):
+        # 3.x lists it by platform (s5l8720x), 4.x by target (the board without "ap": n72)
+        for key in ("KernelCachesByPlatform", "KernelCachesByTarget"):
+            caches = self.plist.get(key, {})
+            if len(caches) == 1:
+                return next(iter(caches.values()))["Release"]
+        return None
 
     def system_image(self):
         return self.file(self.plist["SystemRestoreImages"]["User"])

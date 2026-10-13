@@ -43,14 +43,14 @@ The UDID is the USB serial number the device reports during the restore. Its key
 
 ## Supported firmware
 
-iPod touch 2G (`iPod2,1`): iPhone OS 2.1.1 (5F138), 2.2 (5G77a) and 3.0 (7A341). Each needs the image keys in the
+iPod touch 2G (`iPod2,1`): iPhone OS 2.1.1 (5F138), 2.2 (5G77a), 3.0 (7A341) and iOS 4.0 (8A293). Each needs the image keys in the
 emulator's GID key table, and a NAND formatted for the epoch of its NAND driver (`NAND_EPOCHS` in `skeuo/ipsw.py`;
-2.1.1 is epoch 1, 2.2 epoch 2, 3.0 epoch 3). A bundle is one device with one firmware, so to switch between versions, restore one bundle per
+2.1.1 is epoch 1, 2.2 epoch 2, 3.0 epoch 3, 4.0 epoch 4). A bundle is one device with one firmware, so to switch between versions, restore one bundle per
 version and run the one you want:
 
 ```bash
 python3 -m skeuo restore iPod2,1_2.2_5G77a_Restore.ipsw ~/Skeuo/ipod-2.2
-python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod-3.0
+python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod-3.0, ~/Skeuo/ipod-4.0
 ```
 
 ## Limitations
@@ -60,4 +60,5 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
 - Activation is verified on 2.1.1 and 2.2. 3.0 stays Unactivated: its lockdownd only accepts device certificates whose
   chain ends at Apple's root or factory CA (Security pins their SHA-1), so replacing the certificate files doesn't help.
   An unactivated iPod is still usable on 3.0, because lockdownd only enables the brick state on devices with a
-  baseband.
+  baseband. 4.0 has the same certificate check but enables the brick state on the iPod too, so it boots to the
+  "Connect to iTunes" activation screen.

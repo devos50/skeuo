@@ -44,6 +44,7 @@ FTL_SPARE_TYPES_DATA = (0x40, 0x41)
 
 OVERLAY_PROGRAMMED = 1
 
+MBR_TYPE_GPT_PROTECTIVE = 0xEE
 MBR_PARTITIONS = 0x1BE
 COPY_CHUNK = 1 << 22
 
@@ -194,16 +195,33 @@ def fold(overlay, disk):
     return len(pages)
 
 
-def mbr_partitions(disk):
-    """Returns [(number, first page, pages)] of the MBR at logical page 0."""
+def partitions(disk):
+    """Returns [(number, first page, pages)] of the partitions on the disk: those of the MBR at logical page 0, or, if
+    that is a protective MBR (iOS 4 on), those of the GPT behind it. Pages are the disk's 4 KiB logical blocks."""
     with open(disk, "rb") as f:
         mbr = f.read(512)
-    if mbr[510:512] != b"\x55\xaa":
-        raise NANDError("no MBR on %s" % disk)
+        if mbr[510:512] != b"\x55\xaa":
+            raise NANDError("no MBR on %s" % disk)
+        partitions = []
+        for i in range(4):
+            entry = mbr[MBR_PARTITIONS + 16 * i:MBR_PARTITIONS + 16 * (i + 1)]
+            start, size = struct.unpack_from("<II", entry, 8)
+            if entry[4] and size:
+                partitions.append((i + 1, start, size, entry[4]))
+        if [p[3] for p in partitions] != [MBR_TYPE_GPT_PROTECTIVE]:
+            return [p[:3] for p in partitions]
+
+        f.seek(BYTES_PER_PAGE)
+        header = f.read(92)
+        if header[:8] != b"EFI PART":
+            raise NANDError("protective MBR without a GPT on %s" % disk)
+        entries_lba, count, entry_size = struct.unpack_from("<QII", header, 0x48)
+        f.seek(entries_lba * BYTES_PER_PAGE)
+        table = f.read(count * entry_size)
     partitions = []
-    for i in range(4):
-        entry = mbr[MBR_PARTITIONS + 16 * i:MBR_PARTITIONS + 16 * (i + 1)]
-        start, size = struct.unpack_from("<II", entry, 8)
-        if entry[4] and size:
-            partitions.append((i + 1, start, size))
+    for i in range(count):
+        entry = table[i * entry_size:(i + 1) * entry_size]
+        first, last = struct.unpack_from("<QQ", entry, 32)
+        if entry[:16] != bytes(16):
+            partitions.append((i + 1, first, last - first + 1))
     return partitions

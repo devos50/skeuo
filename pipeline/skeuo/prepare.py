@@ -38,7 +38,7 @@ def prepare(disk, workdir, device, product_type, lockdown=None, log=print):
     """Changes the filesystems on the disk image of a restored device that never booted. device: the bundle's
     identity, with the UDID the restore reported."""
     hfs.check_supported()
-    partitions = {number: (start, size) for number, start, size in nand.mbr_partitions(disk)}
+    partitions = {number: (start, size) for number, start, size in nand.partitions(disk)}
     images = {}
     for number in (SYSTEM_PARTITION, DATA_PARTITION):
         start, size = partitions[number]
