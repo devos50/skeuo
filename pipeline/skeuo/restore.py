@@ -141,7 +141,7 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, device_certificate=
 
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
         try:
-            prepare.prepare(bundle.disk, work, device, ipsw.product, lockdown=lockdown,
+            prepare.prepare(bundle.disk, work, device, ipsw.product, ipsw.build, lockdown=lockdown,
                             device_certificate=device_certificate, log=log)
         finally:
             shutil.rmtree(work, ignore_errors=True)

@@ -3,7 +3,8 @@ Makes a freshly restored device boot to SpringBoard in the emulator, by changing
 
 - SpringBoard's launch daemon gets LK_ENABLE_MBX2D=0, so LayerKit draws in software.
 - The device is activated by Skeuo's own activation authority (see activation.py): its certificates replace Apple's
-  and the device gets an activation record for its UDID.
+  and the device gets an activation record for its UDID. From 3.0 on, lockdownd is patched to accept Skeuo's device
+  certificate, unless a device certificate from Apple is given.
 - With a Lockdown source instead, the Lockdown directory of a device that Apple activated (activation record, data
   ark, device keys, pair records) goes to /private/var/root/Library/Lockdown. That only works for the identity of
   that device.
@@ -34,9 +35,12 @@ def lockdown_files(source):
     return hfs.read_tree(source, LOCKDOWN_IN_ROOTFS)
 
 
-def prepare(disk, workdir, device, product_type, lockdown=None, device_certificate=None, log=print):
+LOCKDOWND_MODE = 0o755
+
+
+def prepare(disk, workdir, device, product_type, build, lockdown=None, device_certificate=None, log=print):
     """Changes the filesystems on the disk image of a restored device that never booted. device: the bundle's
-    identity, with the UDID the restore reported. device_certificate: a PEM device certificate from Apple for the
+    identity, with the UDID the restore reported. build: the firmware build. device_certificate: a PEM device certificate from Apple for the
     activation record (see activation.py)."""
     hfs.check_supported()
     partitions = {number: (start, size) for number, start, size in nand.partitions(disk)}
@@ -52,9 +56,17 @@ def prepare(disk, workdir, device, product_type, lockdown=None, device_certifica
     plist = plistlib.loads(hfs.read_file(images[SYSTEM_PARTITION], SPRINGBOARD_PLIST))
     plist.setdefault("EnvironmentVariables", {})["LK_ENABLE_MBX2D"] = "0"
     system_files = {SPRINGBOARD_PLIST: plistlib.dumps(plist)}
+    modes = {}
     if not lockdown:
         system_files.update(activation.system_files(apple_device_certificate=device_certificate is not None))
-    hfs.add_files(images[SYSTEM_PARTITION], system_files)
+        if not device_certificate:
+            lockdownd = activation.patch_lockdownd(
+                build, hfs.read_file(images[SYSTEM_PARTITION], activation.LOCKDOWND))
+            if lockdownd:
+                log("letting lockdownd accept Skeuo's device certificate")
+                system_files[activation.LOCKDOWND] = lockdownd
+                modes[activation.LOCKDOWND] = LOCKDOWND_MODE
+    hfs.add_files(images[SYSTEM_PARTITION], system_files, modes)
 
     if not lockdown:
         log("activating %s" % device["udid"])

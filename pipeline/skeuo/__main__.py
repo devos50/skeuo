@@ -71,7 +71,7 @@ def cmd_run(parser, args):
         extra_args = ["-rtc", "base=" + clock_date] + extra_args
     emu = Emulator(args.qemu, args.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
                    display=not args.headless, wifi_mac=bundle.info["identity"]["wifi_mac"],
-                   extra_args=extra_args)
+                   boot_args=bundle.boot_args, extra_args=extra_args)
     log("running %s (logs in %s)" % (bundle, bundle.logs))
     if clock_date:
         log("the device's clock starts at %s, within the validity of its device certificate" % clock_date)

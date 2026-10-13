@@ -30,10 +30,11 @@ def wait_for(predicate, timeout, what):
 
 class Emulator:
     """dfu: hold the force-DFU GPIO so the bootrom enters DFU mode.
-    display: show the QEMU window instead of running headless."""
+    display: show the QEMU window instead of running headless.
+    boot_args: the kernel arguments iBoot passes on a normal boot, None for the emulator's default."""
 
     def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, display=False, wifi_mac=None,
-                 extra_args=()):
+                 boot_args=None, extra_args=()):
         if not os.path.exists(qemu):
             raise EmulatorError("QEMU not found at %s" % qemu)
         if not os.path.exists(bootrom):
@@ -44,6 +45,9 @@ class Emulator:
             bootrom, disk, overlay, nand_epoch, nor)
         if dfu:
             machine += ",dfu=on"
+        if boot_args:
+            # QEMU's option parser takes a doubled comma as a literal one
+            machine += ",boot-args=" + boot_args.replace(",", ",,")
         cmd = [
             qemu, "-M", machine, "-cpu", "max", "-m", "2G", "-monitor", "none",
             "-serial", "file:" + self.serial_log,

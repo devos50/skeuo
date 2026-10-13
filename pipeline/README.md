@@ -42,18 +42,23 @@ plain files on the root filesystem, so Skeuo replaces them with its own activati
 The UDID is the USB serial number the device reports during the restore. Its keys mean nothing to real devices.
 
 From iPhone OS 3.0 on, Security pins the root of the device certificate's chain to Apple's, so Skeuo's own device
-certificate no longer verifies. lockdownd doesn't check that the device certificate belongs to the device, though, so
-a certificate Apple issued to any device works, next to Skeuo's signed account token. Pass one to `restore`, as a PEM
-file or as the activation record of a device Apple activated
-(`/private/var/root/Library/Lockdown/activation_records/pod_record.plist`):
+certificate no longer verifies. For 3.0 and 4.0, `prepare` therefore patches lockdownd: `verify_activation_record`
+treats the device certificate as verified, while the account token still has to carry Skeuo's signature. The patched
+lockdownd no longer matches its code signature, so `run` boots these devices with code signing enforcement off
+(`amfi=0xff cs_enforcement_disable=1`; the kernel honours them because the emulated chip is a non-production one).
+That also lets unsigned and modified binaries run.
+
+Without the patch, lockdownd doesn't check that the device certificate belongs to the device, so a certificate Apple
+issued to any device works too, next to Skeuo's signed account token. Pass one to `restore`, as a PEM file or as the
+activation record of a device Apple activated (`/private/var/root/Library/Lockdown/activation_records/pod_record.plist`),
+and lockdownd stays unpatched:
 
 ```bash
 python3 -m skeuo restore iPod2,1_4.0_8A293_Restore.ipsw ~/Skeuo/ipod-4.0 --device-certificate pod_record.plist
 ```
 
 The certificate is only accepted within its validity period, so when it has expired, `run` starts the device's
-clock (QEMU `-rtc base=`) a month before its expiry date. Without a device certificate, 3.0 boots Unactivated (still
-usable) and 4.0 to the "Connect to iTunes" screen.
+clock (QEMU `-rtc base=`) a month before its expiry date.
 
 ## Supported firmware
 
@@ -71,9 +76,8 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
 
 - The bootrom is Apple's code, so it is not included.
 - Preparing the filesystems uses `hdiutil`, so `restore` runs on macOS only for now.
-- Activation with Skeuo's own certificates is verified on 2.1.1 and 2.2. 3.0 stays Unactivated: its lockdownd only accepts device certificates whose
-  chain ends at Apple's root or factory CA (Security pins their SHA-1), so replacing the certificate files doesn't help.
-  An unactivated iPod is still usable on 3.0, because lockdownd only enables the brick state on devices with a
-  baseband. 4.0 has the same certificate check but enables the brick state on the iPod too, so it boots to the
-  "Connect to iTunes" activation screen. 4.0 activates with a device certificate from Apple (see Activation); 3.0
-  should too, but that is not verified yet.
+- Activation is verified on 2.1.1 and 2.2 (Skeuo's certificates), and on 3.0 and 4.0 (patched lockdownd; 4.0 also with
+  a device certificate from Apple). Bundles restored before the lockdownd patch stay as they were: 3.0 Unactivated
+  but usable, 4.0 on the "Connect to iTunes" screen.
+- 2.2's AMFI doesn't report the boot arguments (3.0's and 4.0's log that enforcement is off); whether unsigned
+  binaries run on 2.2 is untested.

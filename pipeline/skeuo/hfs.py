@@ -85,9 +85,10 @@ def chown_root(image, entries):
         data.flush()
 
 
-def add_files(image, files):
-    """Writes files into an HFS+ image, owned by root:wheel. files: {absolute path in the filesystem: bytes}. Missing
-    parent directories are created and made root-owned as well."""
+def add_files(image, files, modes=None):
+    """Writes files into an HFS+ image, owned by root:wheel. files: {absolute path in the filesystem: bytes}. modes:
+    {path: permissions} for files that aren't 0644. Missing parent directories are created and made root-owned as
+    well."""
     entries = []
     with mounted(image) as mountpoint:
         for path, content in files.items():
@@ -105,7 +106,7 @@ def add_files(image, files):
                 os.remove(dst)
             with open(dst, "wb") as f:
                 f.write(content)
-            os.chmod(dst, 0o644)
+            os.chmod(dst, (modes or {}).get(path, 0o644))
             entries.append((os.path.basename(dst), os.stat(os.path.dirname(dst)).st_ino, FILE_RECORD))
     chown_root(image, entries)
 

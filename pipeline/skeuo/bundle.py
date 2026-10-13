@@ -48,6 +48,14 @@ class Bundle:
         return NAND_EPOCHS[build]
 
     @property
+    def boot_args(self):
+        """The kernel arguments to boot with: code signing enforcement off (see activation.py), except on 2.1.1,
+        where the emulator's default arguments already allow any signature."""
+        if self.info["firmware"]["build"] == "5F138":
+            return None
+        return activation.BOOT_ARGS
+
+    @property
     def clock_date(self):
         """The date to start the device's clock at (YYYY-MM-DD), or None for the host's date. A device activated with
         a device certificate from Apple needs a date in its validity period."""

@@ -17,8 +17,14 @@ From iPhone OS 3.0 on, Security pins the anchor of the device certificate (Apple
 Skeuo's device CA doesn't pass anymore. lockdownd doesn't check that the device certificate belongs to the device,
 though: a record with a device certificate that Apple issued to any device, and Apple's iPhoneDeviceCA.pem left in
 place, verifies (load_device_certificate). It has to be in its validity period on the device's clock (see
-clock_date), while the expired Apple intermediates are accepted. On 4.0 that is the only way to activate an iPod:
-lockdownd puts an iPod without a verified record in the brick state.
+clock_date), while the expired Apple intermediates are accepted. On 4.0 an iPod without a verified record is put in
+the brick state.
+
+Without such a certificate, Skeuo patches lockdownd instead (patch_lockdownd): verify_activation_record treats the
+device certificate as verified, while the account token signature check stays. The patched lockdownd no longer matches
+its code signature, so the device runs with AMFI's enforcement off (BOOT_ARGS; the kernel honours these arguments
+because the emulated chip is a non-production one, for which iBoot sets debug-enabled). That also lets unsigned and
+modified binaries run.
 
 A fresh device also gets a data ark with the state that iTunes leaves behind. Without a cached activation state
 lockdownd enables the "brick state" when it starts, and for an iPod it never disables it again, so SpringBoard would
@@ -38,6 +44,16 @@ DEVICE_CA_CERT = "/System/Library/Lockdown/iPhoneDeviceCA.pem"
 # lockdownd falls back to the factory certificates when the production ones fail; 2.2's Security doesn't accept the
 # expired device certificate, but its lockdownd ignores the device certificate on that path ("For Timberline")
 FACTORY_ACTIVATION_CERT = "/System/Library/Lockdown/FactoryActivation.pem"
+LOCKDOWND = "/usr/libexec/lockdownd"
+# the kernel arguments that turn off code signing enforcement (AMFI), for the patched lockdownd
+BOOT_ARGS = "amfi=0xff cs_enforcement_disable=1"
+# Per build, where verify_activation_record calls the device certificate check (SecTrustEvaluate under a policy that
+# pins Apple's root): (file offset, the bl instruction there). It becomes "mov r0, #0", i.e. verified.
+LOCKDOWND_DEVICE_CERTIFICATE_CHECKS = {
+    "7A341": (0xcd8c, bytes.fromhex("cfeaffeb")),  # iPhone OS 3.0, bl 0x88d0 at 0xdd8c
+    "8A293": (0xe354, bytes.fromhex("c7eaffeb")),  # iOS 4.0, bl 0x9e78 at 0xf354
+}
+MOV_R0_0 = bytes.fromhex("0000a0e3")
 RECORD = "/root/Library/Lockdown/activation_records/pod_record.plist"  # on the data partition (/private/var)
 DATA_ARK = "/root/Library/Lockdown/data_ark.plist"
 # data ark keys are "<domain>-<key>"; the global domain is empty
@@ -113,6 +129,18 @@ def system_files(apple_device_certificate=False):
     if not apple_device_certificate:
         files[DEVICE_CA_CERT] = _read("device_ca.pem")
     return files
+
+
+def patch_lockdownd(build, lockdownd):
+    """lockdownd with the device certificate check of verify_activation_record taken out, or None if there is no patch
+    for the build (before 3.0 Skeuo's own device certificate verifies)."""
+    if build not in LOCKDOWND_DEVICE_CERTIFICATE_CHECKS:
+        return None
+    offset, call = LOCKDOWND_DEVICE_CERTIFICATE_CHECKS[build]
+    if lockdownd[offset:offset + len(call)] != call:
+        raise ActivationError("lockdownd of %s doesn't have the expected device certificate check at 0x%x"
+                              % (build, offset))
+    return lockdownd[:offset] + MOV_R0_0 + lockdownd[offset + len(call):]
 
 
 def data_files(udid, serial_number, product_type, device_certificate=None):
