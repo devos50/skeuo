@@ -13,6 +13,7 @@ SUPPORTED_PRODUCTS = {"iPod2,1"}
 NAND_EPOCHS = {
     "5F138": 1,  # iPhone OS 2.1.1
     "5G77a": 2,  # iPhone OS 2.2
+    "7A341": 3,  # iPhone OS 3.0
 }
 
 
@@ -94,6 +95,14 @@ class IPSW:
 
     def kernelcache(self):
         return self.read(self.plist["RestoreKernelCaches"]["Release"])
+
+    def system_kernelcache(self):
+        """The kernelcache that boots the restored system. From 3.0 on it lives on the root filesystem, and restored
+        asks for it during the restore."""
+        caches = self.plist.get("KernelCachesByPlatform", {})
+        if len(caches) == 1:
+            return self.read(next(iter(caches.values()))["Release"])
+        return self.kernelcache()
 
     def system_image(self):
         return self.file(self.plist["SystemRestoreImages"]["User"])

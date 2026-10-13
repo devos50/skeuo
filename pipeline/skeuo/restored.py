@@ -20,6 +20,7 @@ Steps in restored_external (progress operation in brackets):
                               `asr -source asr://localhost:12345 -target /dev/disk0s1 -erase`
                               (the host connects to device port 12345 and serves the image)
   mount_filesystems           [15] fsck_hfs, [16] mount_hfs, per partition
+  install_kernelcache         (3.0) DataRequestMsg KernelCache; the host replies with {KernelCacheFile: img3}, [27]
   fixup_var                   [17] move /mnt1/private/var to the data partition
   unmount_filesystems         [29]
   clear_persistent_boot_args  [25]
@@ -51,6 +52,7 @@ OPERATIONS = {
     19: "update baseband",
     20: "set boot stage",
     25: "clear boot-args",
+    27: "install kernelcache",
     28: "wait for storage device",
     29: "unmount filesystems",
     32: "finalize NAND epoch update",
@@ -264,6 +266,18 @@ class NORServer:
                 return f.read()
         self.log("nor: %s" % ", ".join(os.path.basename(p) for p in [self.llb] + self.images))
         client.conn.send({"LlbImageData": read(self.llb), "NorImageData": [read(p) for p in self.images]})
+
+
+class KernelCacheServer:
+    """Answers the KernelCache request of restored 3.0, which installs the kernelcache on the root filesystem."""
+
+    def __init__(self, data, log=print):
+        self.data = data
+        self.log = log
+
+    def __call__(self, client, message):
+        self.log("kernelcache: %d bytes" % len(self.data))
+        client.conn.send({"KernelCacheFile": self.data})
 
 
 def run_restore(link, data_handlers=None, log=print):

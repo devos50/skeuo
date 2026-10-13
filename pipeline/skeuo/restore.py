@@ -12,7 +12,7 @@ import time
 from . import identity, nor, prepare
 from .bundle import Bundle
 from .emulator import Emulator, EmulatorError, wait_for
-from .restored import ASRServer, NORServer, RestoreError, run_restore
+from .restored import ASRServer, KernelCacheServer, NORServer, RestoreError, run_restore
 from .usb.dfu import DFU_PID, RECOVERY_PID, command, dfu_upload, enumerate_device, set_configuration, upload
 from .usb.link import USBError, USBNoDevice, USBTimeout
 from .usb.mux import MuxError
@@ -56,6 +56,11 @@ def boot_ramdisk(emu, link, ipsw, step):
     def ibec_ready():
         enumerate_device(link, RECOVERY_PID)
         set_configuration(link)
+        # iBEC 3.0's devicetree command reads its first argument even when it has none, from the argument array the
+        # previous command filled in. iTunes sends "setenv auto-boot false" first; without an earlier command with
+        # arguments that slot is still stack fill ('stak'), which iBEC dereferences. Unlike iTunes this doesn't
+        # saveenv: restored sets auto-boot back to true, but the kernel only writes NVRAM to the NOR when it reboots.
+        command(link, "setenv auto-boot false")
 
     def load_device_tree():
         upload(link, device_tree)
@@ -89,6 +94,7 @@ def run_restored(emu, ipsw, log):
     handlers = {
         "SystemImageData": ASRServer(ipsw.system_image(), log=log),
         "NORData": NORServer(*ipsw.nor_images(), log=log),
+        "KernelCache": KernelCacheServer(ipsw.system_kernelcache(), log=log),
     }
     try:
         status, udid = run_restore(link, handlers, log=log)
