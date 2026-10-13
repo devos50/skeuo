@@ -26,6 +26,9 @@ import uuid
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "activation")
 ACTIVATION_CERT = "/System/Library/Lockdown/iPhoneActivation.pem"
 DEVICE_CA_CERT = "/System/Library/Lockdown/iPhoneDeviceCA.pem"
+# lockdownd falls back to the factory certificates when the production ones fail; 2.2's Security doesn't accept the
+# expired device certificate, but its lockdownd ignores the device certificate on that path ("For Timberline")
+FACTORY_ACTIVATION_CERT = "/System/Library/Lockdown/FactoryActivation.pem"
 RECORD = "/root/Library/Lockdown/activation_records/pod_record.plist"  # on the data partition (/private/var)
 DATA_ARK = "/root/Library/Lockdown/data_ark.plist"
 # data ark keys are "<domain>-<key>"; the global domain is empty
@@ -91,7 +94,8 @@ def activation_record(udid, serial_number, product_type):
 
 def system_files():
     """The certificates that replace Apple's on the system partition."""
-    return {ACTIVATION_CERT: _read("activation.pem"), DEVICE_CA_CERT: _read("device_ca.pem")}
+    return {ACTIVATION_CERT: _read("activation.pem"), DEVICE_CA_CERT: _read("device_ca.pem"),
+            FACTORY_ACTIVATION_CERT: _read("activation.pem")}
 
 
 def data_files(udid, serial_number, product_type):
