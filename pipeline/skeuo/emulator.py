@@ -1,9 +1,24 @@
 """
 Runs QEMU for a device bundle, with the USB link on a free local port and the serial port logged to a file.
+
+QEMU is controlled over QMP on another local TCP port (a UNIX socket path in a bundle can exceed macOS's 104 bytes).
+suspend() saves the machine to a file and quits, resume() loads such a file into a QEMU started with incoming=True.
+The NAND is not part of the saved state: the state file is only valid with the disk image and overlay exactly as they
+were when it was saved. QEMU must also be started with the same command, apart from its host-side details
+(the fingerprint).
+
+Closing the window or quitting QEMU from its menu pauses the machine instead of quitting (-action shutdown=pause,
+which the emulator's SDL and Cocoa windows honour) and sets shutdown_requested, so the run can still suspend it.
+A signal to QEMU still makes it quit. The guest never requests a shutdown itself. Because a machine paused like that is in QEMU's "shutdown" run state, which can't be continued
+after loading, the run state is not saved (store-global-state=off): a loaded machine starts running.
 """
+import hashlib
+import json
 import os
+import queue
 import socket
 import subprocess
+import threading
 import time
 
 from .usb.link import USBLink
@@ -28,39 +43,123 @@ def wait_for(predicate, timeout, what):
     raise EmulatorError("timed out waiting for %s" % what)
 
 
+def file_digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class QMP:
+    """A QMP connection. execute() runs a command and returns its result; events go to on_event, called from the
+    reader thread."""
+
+    def __init__(self, port, on_event=None):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.sock.settimeout(None)
+        self.file = self.sock.makefile("rwb")
+        self.on_event = on_event
+        self.replies = queue.Queue()
+        self.lock = threading.Lock()
+        greeting = json.loads(self.file.readline())
+        if "QMP" not in greeting:
+            raise EmulatorError("unexpected QMP greeting %r" % greeting)
+        threading.Thread(target=self._read, daemon=True).start()
+        self.execute("qmp_capabilities")
+
+    def _read(self):
+        try:
+            for line in self.file:
+                message = json.loads(line)
+                if "event" in message:
+                    if self.on_event:
+                        self.on_event(message)
+                else:
+                    self.replies.put(message)
+        except (OSError, ValueError):
+            pass
+        self.replies.put(None)  # QEMU went away
+
+    def execute(self, command, timeout=30, **arguments):
+        request = {"execute": command}
+        if arguments:
+            request["arguments"] = arguments
+        with self.lock:
+            try:
+                self.file.write(json.dumps(request).encode() + b"\n")
+                self.file.flush()
+                reply = self.replies.get(timeout=timeout)
+            except (OSError, queue.Empty) as e:
+                raise EmulatorError("QMP %s: %s" % (command, e or "timed out"))
+        if reply is None:
+            raise EmulatorError("QMP %s: QEMU closed the connection" % command)
+        if "error" in reply:
+            raise EmulatorError("QMP %s: %s" % (command, reply["error"].get("desc", reply["error"])))
+        return reply.get("return")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
 class Emulator:
     """dfu: hold the force-DFU GPIO so the bootrom enters DFU mode.
     display: show the QEMU window instead of running headless.
-    boot_args: the kernel arguments iBoot passes on a normal boot, None for the emulator's default."""
+    boot_args: the kernel arguments iBoot passes on a normal boot, None for the emulator's default.
+    incoming: wait for resume() to load a saved state instead of booting.
+    clock: the -rtc base= date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS), None for the host's.
+
+    fingerprint is what a saved state belongs to: QEMU's digest and its arguments without the host-side details
+    (file paths, ports, the window, the clock), which may differ between saving and loading."""
 
     def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, display=False, wifi_mac=None,
-                 boot_args=None, extra_args=()):
+                 boot_args=None, extra_args=(), incoming=False, clock=None):
         if not os.path.exists(qemu):
             raise EmulatorError("QEMU not found at %s" % qemu)
         if not os.path.exists(bootrom):
             raise EmulatorError("bootrom not found at %s" % bootrom)
         self.port = free_port()
+        self.qmp_port = free_port()
         self.serial_log = os.path.join(logdir, "serial.log")
-        machine = "iPod-Touch,bootrom=%s,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
-            bootrom, disk, overlay, nand_epoch, nor)
-        if dfu:
-            machine += ",dfu=on"
-        if boot_args:
-            # QEMU's option parser takes a doubled comma as a literal one
-            machine += ",boot-args=" + boot_args.replace(",", ",,")
-        cmd = [
-            qemu, "-M", machine, "-cpu", "max", "-m", "2G", "-monitor", "none",
-            "-serial", "file:" + self.serial_log,
-            "-chardev", "socket,id=usb,host=127.0.0.1,port=%d,server=on,wait=off,nodelay=on" % self.port,
-        ]
-        if wifi_mac:
-            # the BCM4325 model reports the NIC's address as its own
-            cmd += ["-nic", "user,model=bcm4325,mac=%s" % wifi_mac.lower()]
+
+        def command(host):
+            machine = "iPod-Touch,bootrom=%s,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
+                host["bootrom"], host["disk"], host["overlay"], nand_epoch, host["nor"])
+            if dfu:
+                machine += ",dfu=on"
+            if boot_args:
+                # QEMU's option parser takes a doubled comma as a literal one
+                machine += ",boot-args=" + boot_args.replace(",", ",,")
+            cmd = [
+                "-M", machine, "-cpu", "max", "-m", "2G", "-monitor", "none",
+                "-serial", "file:" + host["serial"],
+                "-chardev", "socket,id=usb,host=127.0.0.1,port=%s,server=on,wait=off,nodelay=on" % host["port"],
+                "-qmp", "tcp:127.0.0.1:%s,server=on,wait=off" % host["qmp_port"],
+                "-action", "shutdown=pause", "-global", "migration.store-global-state=off",
+            ]
+            if wifi_mac:
+                # the BCM4325 model reports the NIC's address as its own
+                cmd += ["-nic", "user,model=bcm4325,mac=%s" % wifi_mac.lower()]
+            return cmd + list(extra_args)
+
+        host = {"bootrom": bootrom, "disk": disk, "overlay": overlay, "nor": nor, "serial": self.serial_log,
+                "port": self.port, "qmp_port": self.qmp_port}
+        self.fingerprint = {"qemu": file_digest(qemu), "args": command({k: "<%s>" % k for k in host})}
+        cmd = [qemu] + command(host)
         if not display:
             cmd += ["-display", "none"]
-        cmd += list(extra_args)
+        if clock:
+            cmd += ["-rtc", "base=" + clock]
+        if incoming:
+            cmd += ["-incoming", "defer"]
+        self.shutdown_requested = threading.Event()
+        self.qmp = None
         self.log = open(os.path.join(logdir, "qemu.log"), "w")
-        self.proc = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT)
+        # in its own session, so that a Ctrl-C in the terminal reaches only the pipeline, which suspends
+        self.proc = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
 
     def serial(self):
         try:
@@ -88,6 +187,75 @@ class Emulator:
         wait_for(try_connect, 10, "the USB link socket")
         return link
 
+    def control(self):
+        """The QMP connection, opened on first use."""
+        if self.qmp is None:
+            qmp = None
+
+            def try_connect():
+                nonlocal qmp
+                self.check_running()
+                try:
+                    qmp = QMP(self.qmp_port, on_event=self._event)
+                    return True
+                except ConnectionRefusedError:
+                    return False
+
+            wait_for(try_connect, 10, "QMP")
+            self.qmp = qmp
+        return self.qmp
+
+    def _event(self, message):
+        if message["event"] == "SHUTDOWN":
+            self.shutdown_requested.set()
+
+    def _wait_migration(self, timeout, what):
+        status = {}
+
+        def done():
+            self.check_running()
+            status.update(self.control().execute("query-migrate"))
+            return status.get("status") in ("completed", "failed", "cancelled")
+
+        wait_for(done, timeout, what)
+        if status["status"] != "completed":
+            raise EmulatorError("%s %s: %s" % (what, status["status"], status.get("error-desc", "no details")))
+
+    def suspend(self, state):
+        """Stops the machine, saves it to state and quits QEMU."""
+        qmp = self.control()
+        qmp.execute("stop")
+        qmp.execute("migrate", uri="file:" + state)
+        self._wait_migration(120, "saving the state")
+        self.quit()
+
+    def resume(self, state):
+        """Loads state into a QEMU started with incoming=True and runs it."""
+        qmp = self.control()
+        qmp.execute("migrate-incoming", uri="file:" + state)
+
+        def loaded():
+            self.check_running()
+            return qmp.execute("query-status")["status"] != "inmigrate"
+
+        wait_for(loaded, 120, "the state to load")
+        status = qmp.execute("query-status")["status"]
+        if status not in ("running", "paused", "postmigrate"):
+            raise EmulatorError("loading the state left the machine %s" % status)
+        if status != "running":
+            qmp.execute("cont")
+
+    def quit(self):
+        try:
+            self.control().execute("quit")
+        except EmulatorError:
+            pass
+        try:
+            self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            pass
+        self.stop()
+
     def wait(self):
         return self.proc.wait()
 
@@ -95,4 +263,6 @@ class Emulator:
         if self.proc.poll() is None:
             self.proc.kill()
         self.proc.wait()
+        if self.qmp:
+            self.qmp.close()
         self.log.close()

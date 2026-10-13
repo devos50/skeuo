@@ -27,11 +27,41 @@ Run the commands from this directory (or put it on `PYTHONPATH`). Only the Pytho
 
 The bundle keeps the disk as `disk.img`, a sparse raw disk image that macOS can mount
 (`hdiutil attach -imagekey diskimage-class=CRawDiskImage disk.img`). While the emulator runs, the NAND pages iOS
-writes go to `overlay/`; they are folded into `disk.img` when it stops, or before the next start if it crashed.
+writes go to `overlay/`; they are folded into `disk.img` when it powers off, or before the next start if it crashed
+(not while it is suspended, see below).
 Bundles from before this format (one file per NAND page in `nand/`) are converted when they are opened.
 
+## Running, suspending and resuming
+
 `run` boots the bundle with a window and serves it to libimobiledevice through a built-in usbmuxd
-(`USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`).
+(`USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`). Only one `run` can use a bundle at a time (`<bundle>/.lock`).
+
+Stopping a run suspends the device, like closing a laptop: Ctrl-C, SIGTERM, closing the window or quitting QEMU
+(Cmd-Q) saves the machine to `<bundle>/suspended.state` (~80 MB), and the next `run` resumes it within a second,
+on the screen it was on. The host sees the device unplugged and plugged in again, so libimobiledevice answers about
+2 s later.
+
+```bash
+python3 -m skeuo run ~/Skeuo/my-ipod                 # boots, or resumes a suspended device
+python3 -m skeuo run --power-off ~/Skeuo/my-ipod     # stopping powers off instead of suspending
+python3 -m skeuo run --cold-boot ~/Skeuo/my-ipod     # discards a saved state and boots
+python3 -m skeuo power-off ~/Skeuo/my-ipod           # discards a saved state
+```
+
+The saved state holds RAM, the CPU, every device and the NOR, but not the NAND. The iOS FTL keeps the NAND's
+physical layout in RAM, so a state is only valid with `disk.img` and `overlay/` exactly as they were when it was
+saved: while a device is suspended, its overlay is not folded into the disk. Powering off (or a cold boot) is when
+the overlay is folded again. `device.json` records the state under `"suspended"`: when it was saved, the device's
+clock at that moment, and the fingerprint of the emulator it belongs to (QEMU's SHA-256 and its arguments without
+paths, ports, window and clock). A state is only loaded by the same QEMU build with the same arguments, including
+extra QEMU arguments after `--`; otherwise `run` refuses and asks to run it with those or discard it.
+
+Resuming consumes the state: once QEMU has loaded it, the record and the file are removed. If QEMU crashes or is
+killed afterwards, the next `run` folds the overlay and boots cold, as after a power loss. A suspend that did not
+finish leaves no record, so its state file is ignored and removed.
+
+The guest keeps its calendar in RAM, so after a resume it continues from the time it was suspended at. A device whose clock starts at a fixed date (see Activation) resumes its clock at the time it was suspended, so it
+doesn't jump back to that date, unless that is less than a day before its certificate expires.
 
 ## Activation
 
@@ -79,5 +109,6 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
 - Activation is verified on 2.1.1 and 2.2 (Skeuo's certificates), and on 3.0 and 4.0 (patched lockdownd; 4.0 also with
   a device certificate from Apple). Bundles restored before the lockdownd patch stay as they were: 3.0 Unactivated
   but usable, 4.0 on the "Connect to iTunes" screen.
+- After a resume, the guest's calendar lags by the time the device was suspended (until it reboots).
 - 2.2's AMFI doesn't report the boot arguments (3.0's and 4.0's log that enforcement is off); whether unsigned
   binaries run on 2.2 is untested.

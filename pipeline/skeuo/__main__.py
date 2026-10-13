@@ -2,18 +2,21 @@
 Skeuo: classic iPhone OS in an emulator.
 
   python3 -m skeuo restore <ipsw> <bundle>    create a device from an IPSW (.ipsw file or extracted directory)
-  python3 -m skeuo run <bundle>               start a device
+  python3 -m skeuo run <bundle>               start a device, or resume it if it was suspended
+  python3 -m skeuo power-off <bundle>         discard a suspended device's saved state
 
 The emulator needs the S5L8720 bootrom, which Skeuo does not ship: pass --bootrom or set SKEUO_BOOTROM. QEMU is
 found through --qemu, SKEUO_QEMU, or the emulator submodule's build directory.
 """
 import argparse
+import datetime
 import os
 import shutil
 import signal
 import sys
 import tempfile
 import threading
+import time
 
 from .activation import ActivationError, load_device_certificate
 from .bundle import Bundle, BundleError
@@ -60,21 +63,49 @@ def cmd_restore(parser, args):
     return 0
 
 
+def check_suspended(bundle, fingerprint):
+    """Raises if the bundle's saved state belongs to a different emulator or command."""
+    saved = bundle.suspended["fingerprint"]
+    if saved == fingerprint:
+        return
+    what = "QEMU build" if saved["qemu"] != fingerprint["qemu"] else "emulator arguments"
+    raise BundleError("%s was suspended on %s with different %s, so its saved state can't be loaded. Run it with the "
+                      "same ones, or discard the state with --cold-boot or `python3 -m skeuo power-off %s`"
+                      % (bundle.path, bundle.suspended["saved"], what, bundle.path))
+
+
 def cmd_run(parser, args):
     check_emulator_arguments(parser, args)
     bundle = Bundle.open(args.bundle)
+    bundle.lock()
     os.makedirs(bundle.logs, exist_ok=True)
-    bundle.fold(log=log)  # left behind by a run that did not end cleanly
-    extra_args = list(args.qemu_args)
-    clock_date = bundle.clock_date
-    if clock_date and not any(arg.startswith("-rtc") for arg in extra_args):
-        extra_args = ["-rtc", "base=" + clock_date] + extra_args
+    if args.cold_boot:
+        bundle.discard_suspended(log=log)
+    resume = bundle.suspended
+    if not resume:
+        bundle.fold(log=log)  # left behind by a run that did not end cleanly
+    clock = bundle.resume_clock() if resume else bundle.clock_date
+    if any(arg.startswith("-rtc") for arg in args.qemu_args):
+        clock = None
     emu = Emulator(args.qemu, args.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
                    display=not args.headless, wifi_mac=bundle.info["identity"]["wifi_mac"],
-                   boot_args=bundle.boot_args, extra_args=extra_args)
-    log("running %s (logs in %s)" % (bundle, bundle.logs))
-    if clock_date:
-        log("the device's clock starts at %s, within the validity of its device certificate" % clock_date)
+                   boot_args=bundle.boot_args, extra_args=args.qemu_args, incoming=bool(resume), clock=clock)
+    started = time.time()
+    try:
+        emu.control()  # from the start, to see a closed window (SHUTDOWN)
+        if resume:
+            check_suspended(bundle, emu.fingerprint)
+            log("resuming %s, suspended at %s (logs in %s)" % (bundle, resume["saved"], bundle.logs))
+            emu.resume(bundle.state)
+            bundle.consume_suspended()
+        else:
+            log("running %s (logs in %s)" % (bundle, bundle.logs))
+    except BaseException:
+        emu.stop()
+        raise
+    if clock:
+        log("the device's clock %s at %s, within the validity of its device certificate"
+            % ("continues" if resume else "starts", clock))
     if args.usbmuxd:
         start_bridge(args.usbmuxd, port=emu.port, pair_records=args.pair_records)
         log("for libimobiledevice: export USBMUXD_SOCKET_ADDRESS=%s" % args.usbmuxd)
@@ -83,15 +114,48 @@ def cmd_run(parser, args):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, stop_on_sigterm)
-    done = threading.Event()
-    threading.Thread(target=lambda: (emu.wait(), done.set()), daemon=True).start()
+    signal.signal(signal.SIGINT, signal.default_int_handler)  # also when started in the background
+    exited = threading.Event()
+    threading.Thread(target=lambda: (emu.wait(), exited.set()), daemon=True).start()
     try:
-        done.wait()
+        # the window was closed, or QEMU got a signal: it paused the machine (see emulator.py)
+        while not (exited.is_set() or emu.shutdown_requested.is_set()):
+            exited.wait(0.2)
     except KeyboardInterrupt:
         pass
-    finally:
+    # from here on, a second Ctrl-C must not interrupt the save
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    if exited.is_set():
+        log("QEMU exited with %s; see %s" % (emu.proc.returncode, os.path.join(bundle.logs, "qemu.log")))
         emu.stop()
         bundle.fold(log=log)
+        return 1
+    if not args.power_off:
+        log("suspending")
+        try:
+            emu.suspend(bundle.state)
+        except EmulatorError as e:
+            log("could not save the state (%s); powering off instead" % e)
+        else:
+            device_clock = None
+            if clock:
+                base = datetime.datetime.fromisoformat(clock)
+                device_clock = (base + datetime.timedelta(seconds=time.time() - started)).isoformat(timespec="seconds")
+            bundle.record_suspended(emu.fingerprint, device_clock)
+            log("suspended; `run` resumes it, `power-off` discards the state")
+            return 0
+    emu.stop()
+    bundle.fold(log=log)
+    return 0
+
+
+def cmd_power_off(parser, args):
+    bundle = Bundle.open(args.bundle)
+    bundle.lock()
+    if not bundle.suspended:
+        log("%s is not suspended" % bundle)
+    bundle.discard_suspended(log=log)
     return 0
 
 
@@ -121,8 +185,15 @@ def main():
     p.add_argument("--usbmuxd", default="127.0.0.1:27015", metavar="HOST:PORT",
                    help="serve the device to libimobiledevice here (default %(default)s, empty to disable)")
     p.add_argument("--pair-records", default=DEFAULT_PAIR_RECORDS)
+    p.add_argument("--cold-boot", action="store_true", help="discard the saved state of a suspended device and boot")
+    p.add_argument("--power-off", action="store_true",
+                   help="when the run stops, power the device off instead of suspending it")
     p.add_argument("qemu_args", nargs="*", help="extra QEMU arguments, after --")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("power-off", help="discard a suspended device's saved state")
+    p.add_argument("bundle")
+    p.set_defaults(func=cmd_power_off)
 
     args = parser.parse_args()
     try:
