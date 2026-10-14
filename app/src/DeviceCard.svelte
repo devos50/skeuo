@@ -1,7 +1,7 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
 
-  let { device, selected, blocked, thumbnailVersion, onselect, onopen, onmenu } = $props();
+  let { device, selected, blocked, thumbnailVersion, progress, onselect, onopen, onmenu } = $props();
   let thumbnail = $state(null);
 
   const BADGES = {
@@ -26,7 +26,7 @@
   });
 
   const label = $derived(
-    `${device.build ? (Number(device.version.split(".")[0]) >= 4 ? "iOS " : "iPhone OS ") : ""}${device.version || ""}`
+    device.version ? `${Number(device.version.split(".")[0]) >= 4 ? "iOS" : "iPhone OS"} ${device.version}` : ""
   );
 </script>
 
@@ -47,12 +47,17 @@
       <img src={thumbnail} alt="" draggable="false" />
     {:else}
       <!-- until the app has shown the device once: a plain lock screen of our own -->
-      <div class="placeholder">
+      <div class="placeholder" class:dim={device.state === "creating" || device.state === "incomplete"}>
         <span class="time">9:41</span>
-        <span class="slider">slide to unlock</span>
+        <span class="slider" class:hidden={BADGES[device.state]}>slide to unlock</span>
       </div>
     {/if}
-    {#if BADGES[device.state]}
+    {#if device.state === "creating"}
+      <div class="progress">
+        <span>{progress?.phase === "download" ? "Downloading" : progress ? "Restoring" : "Preparing"}{progress ? ` ${Math.round(progress.fraction * 100)}%` : "…"}</span>
+        <div class="bar"><div style:width="{(progress?.fraction ?? 0) * 100}%"></div></div>
+      </div>
+    {:else if BADGES[device.state]}
       <span class="badge {device.state}">{BADGES[device.state]}</span>
     {/if}
   </div>
@@ -77,7 +82,9 @@
     padding: 18px 8px 14px; color: #fff;
     background: radial-gradient(circle at 50% 30%, #3b5f8f, #10192a 70%);
   }
+  .placeholder.dim { opacity: 0.45; }
   .time { font-size: 26px; font-weight: 200; }
+  .hidden { visibility: hidden; }
   .slider { font-size: 8px; padding: 3px 8px; border-radius: 4px; background: rgba(0, 0, 0, 0.5); color: #ccc; }
   .badge {
     position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); white-space: nowrap;
@@ -87,6 +94,12 @@
   .badge.running { background: var(--running); color: #fff; }
   .badge.suspended { background: var(--suspended); color: #fff; }
   .badge.incomplete { background: var(--danger); }
+  .progress {
+    position: absolute; inset: auto 8px 10px; display: grid; gap: 5px; justify-items: center;
+    font-size: 10px; font-weight: 600; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  }
+  .bar { width: 100%; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.25); overflow: hidden; }
+  .bar div { height: 100%; background: #fff; transition: width 0.3s; }
   .caption { text-align: center; max-width: 100%; }
   .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .caption .muted { font-size: 12px; }

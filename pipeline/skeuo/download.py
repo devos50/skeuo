@@ -94,6 +94,7 @@ def available(cache=None):
         path = cached(version, cache)
         part = os.path.join(cache or default_cache(), filename(version) + ".part")
         result.append({
+            "product": "iPod2,1",
             "version": version,
             "build": fw["build"],
             "downloadable": bool(fw["url"]),

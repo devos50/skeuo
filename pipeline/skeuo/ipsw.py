@@ -7,7 +7,9 @@ import plistlib
 import shutil
 import zipfile
 
-SUPPORTED_PRODUCTS = {"iPod2,1"}
+# The devices Skeuo emulates, by product type, with the name the app shows
+DEVICE_TYPES = {"iPod2,1": "iPod touch (2nd generation)"}
+SUPPORTED_PRODUCTS = set(DEVICE_TYPES)
 # The firmware the emulator has GID keys for, by build, with the security epoch of its NAND driver. The NAND signature
 # carries that epoch, and iBoot only boots from a NAND formatted for its own epoch.
 NAND_EPOCHS = {

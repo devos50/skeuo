@@ -10,6 +10,7 @@ export const library = $state({
   usb: null,          // the running device's usbmuxd info while libimobiledevice sees it
   error: null,        // the last failed action, shown in the gallery
   thumbnails: {},     // id -> a counter that changes when the thumbnail does
+  progress: {},       // id -> {phase: "download" | "restore", fraction, request} while a device is being created
 });
 
 export async function call(method, params = {}) {
@@ -52,11 +53,16 @@ export async function connect() {
           if (event.reason === "crashed") library.error = "The device stopped unexpectedly. Its logs are in the bundle.";
           break;
         }
+        case "progress":
+          if (event.device) library.progress[event.device] = { phase: event.phase, fraction: event.fraction, request: event.request };
+          break;
         case "device":
+          if (event.device.state !== "creating") delete library.progress[event.device.id];
           if (event.device.thumbnail) library.thumbnails[event.device.id] = (library.thumbnails[event.device.id] || 0) + 1;
           upsert(event.device);
           break;
         case "removed":
+          delete library.progress[event.device];
           library.devices = library.devices.filter((d) => d.id !== event.device);
           break;
         case "usb":
@@ -88,4 +94,21 @@ export async function act(method, id) {
   } catch (e) {
     library.error = e.message || String(e);
   }
+}
+
+/** Creates a device (see create in serve.py). The card shows up at once through the daemon's events; this resolves
+ * when the restore is done. */
+export async function create(params) {
+  library.error = null;
+  try {
+    await call("create", params);
+  } catch (e) {
+    if (e.code !== "cancelled") library.error = `Couldn't create “${params.name || "the device"}”: ${e.message || e}`;
+  }
+}
+
+/** Stops the download of a device being created (the restore itself can't be stopped). */
+export async function cancelCreate(id) {
+  const progress = library.progress[id];
+  if (progress) await call("cancel", { request: progress.request });
 }

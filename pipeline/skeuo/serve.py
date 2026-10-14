@@ -30,9 +30,11 @@ When stdin closes (the app quit) or the daemon gets SIGTERM/SIGINT, it suspends 
 
 Requests (params, then result):
   list           {}                                     {"devices": [device, ...], "running": id or null}
+  device_types   {}                                     {"device_types": [{"product", "name", "versions"}]}: what
+                                                        create can make, with each type's versions (as ipsws)
   ipsws          {}                                     {"ipsws": [...]}: the versions, cached or downloadable
   download_ipsw  {"version"}                            {"path"}; progress events; cancel stops it
-  create         {"name", "version" | "ipsw", "device_certificate", "lockdown", "nor_images", "settings"}
+  create         {"product", "name", "version" | "ipsw", "device_certificate", "lockdown", "nor_images", "settings"}
                                                         {"device"}; the device event comes first, then progress
   run            {"device", "cold_boot"}                {"device", "vnc": {"port", "websocket"}, "resumed"}
   suspend        {"device"}                             {"state": "suspended"}
@@ -62,7 +64,7 @@ from .activation import ActivationError, load_device_certificate
 from .bundle import MACHINE_SETTINGS, Bundle, BundleError
 from .emulator import EmulatorError, kill_all
 from .hfs import HFSError
-from .ipsw import IPSW, IPSWError
+from .ipsw import DEVICE_TYPES, IPSW, IPSWError
 from .nand import NANDError
 from .restore import restore
 from .session import Session
@@ -269,6 +271,12 @@ class Daemon:
     def do_ipsws(self, params):
         return {"ipsws": downloads.available(self.cache)}
 
+    def do_device_types(self, params):
+        versions = downloads.available(self.cache)
+        return {"device_types": [{"product": product, "name": name,
+                                  "versions": [v for v in versions if v["product"] == product]}
+                                 for product, name in DEVICE_TYPES.items()]}
+
     def _download(self, request_id, version, device_id=None):
         cancel = self.cancels[request_id] = threading.Event()
         last = [-1]
@@ -300,6 +308,9 @@ class Daemon:
         if not self.bootrom or not os.path.exists(self.bootrom):
             raise RequestError("no_bootrom", "the S5L8720 bootrom is needed to create a device")
         name = (params.get("name") or "").strip()
+        product = params.get("product") or "iPod2,1"
+        if product not in DEVICE_TYPES:
+            raise RequestError("bad_request", "Skeuo can't emulate %s yet" % product)
         version, ipsw_path = params.get("version"), params.get("ipsw")
         if not ipsw_path and not version:
             raise RequestError("bad_request", "create needs a version or an IPSW")
@@ -328,6 +339,8 @@ class Daemon:
             if not ipsw_path:
                 ipsw_path = downloads.cached(version, self.cache) or self._download(request_id, version, device_id)
             ipsw = IPSW(ipsw_path, workdir, nor_images=params.get("nor_images"))
+            if ipsw.product != product:
+                raise RequestError("bad_request", "%s is firmware for %s, not %s" % (ipsw_path, ipsw.product, product))
             if version and ipsw.version != version:
                 raise RequestError("bad_request", "%s is %s, not %s" % (ipsw_path, ipsw.version, version))
             certificate = params.get("device_certificate")

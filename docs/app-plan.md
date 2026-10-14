@@ -1,7 +1,7 @@
 # Skeuo app: plan
 
 Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API), 2 (display/input spike) and
-3 (app skeleton, Svelte) done on 2026-10-14; milestone 4 (create flow) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+3 (app skeleton, Svelte) and 4 (create flow) done on 2026-10-14; milestone 5 (device window polish) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
 and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
@@ -110,6 +110,9 @@ The app's own settings (library path, bootrom location, IPSW cache) live in the 
 3. **App skeleton.** A Tauri project in `app/`: it starts the daemon, with the gallery, the first-run bootrom step and
    start/suspend. *Done 2026-10-14 with Svelte 5, see `app/README.md`.*
 4. **Create flow.** The new-emulator dialog, the IPSW download from Apple, and the background restore with progress.
+   *Done 2026-10-14. The dialog also has a device-type menu (Martijn's request: more devices later; only the
+   iPod touch 2G for now, `DEVICE_TYPES` in ipsw.py and the daemon's `device_types` request). Move to Trash came
+   along from milestone 6, for incomplete devices.*
 5. **Device window polish.** Frame, scaling, rotation (rotate the frame along with the accelerometer), shortcuts,
    screenshots, live thumbnails.
 6. **Edit/remove**, settings.

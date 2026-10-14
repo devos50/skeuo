@@ -207,6 +207,27 @@ fn thumbnail(state: State<App>, id: String) -> tauri::ipc::Response {
     tauri::ipc::Response::new(bytes)
 }
 
+/// Asks for a file or folder for the new-device dialog: "ipsw" (a restore IPSW), "certificate" (a device
+/// certificate or activation record) or "folder" (NOR images). The pipeline needs paths, which a web page can't give.
+#[tauri::command]
+async fn pick_path(app: AppHandle, kind: String) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog = app.dialog().file();
+    let send = move |path: Option<tauri_plugin_dialog::FilePath>| {
+        let _ = sender.send(path.map(|p| p.to_string()));
+    };
+    match kind.as_str() {
+        "folder" => dialog.set_title("Choose the NOR images folder").pick_folder(send),
+        "certificate" => dialog
+            .set_title("Choose a device certificate")
+            .add_filter("Device certificate or activation record", &["pem", "plist", "crt"])
+            .pick_file(send),
+        _ => dialog.set_title("Choose a restore IPSW").add_filter("Restore IPSW", &["ipsw", "zip"]).pick_file(send),
+    }
+    receiver.await.ok().flatten()
+}
+
 /// Shows the device's bundle in the file manager.
 #[tauri::command]
 fn reveal(path: String) -> Result<(), String> {
@@ -235,6 +256,7 @@ fn dirs_home() -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data = app.path().data_dir()?.join("Skeuo");
             let settings = load_settings(&data);
@@ -248,7 +270,7 @@ pub fn run() {
             start_daemon(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, import_bootrom, rpc, start_device, thumbnail, reveal])
+        .invoke_handler(tauri::generate_handler![status, import_bootrom, rpc, start_device, thumbnail, reveal, pick_path])
         .build(tauri::generate_context!())
         .expect("could not start Skeuo")
         .run(|app, event| {
