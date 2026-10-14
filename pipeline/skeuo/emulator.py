@@ -270,6 +270,14 @@ class Emulator:
         """Writes the screen as it is now (also while the backlight is off) to path as a PNG."""
         self.control().execute("screendump", filename=path, format="png")
 
+    def orientation(self, value=None):
+        """How the device is held: "flat" or portrait, landscape-right (home button right), portrait-upside-down,
+        landscape-left. Sets it first if value is given."""
+        qmp = self.control()
+        if value is not None:
+            qmp.execute("qom-set", path="/machine/accelerometer", property="orientation", value=value)
+        return qmp.execute("qom-get", path="/machine/accelerometer", property="orientation")
+
     def quit(self):
         try:
             self.control().execute("quit")

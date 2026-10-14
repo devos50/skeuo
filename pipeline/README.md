@@ -87,7 +87,7 @@ doesn't jump back to that date, unless that is less than a day before its certif
 
 `serve` runs the pipeline as a daemon for the Skeuo app. It speaks JSON lines over stdin and stdout: requests with
 an id (`list`, `device_types`, `ipsws`, `download_ipsw`, `create`, `run`, `suspend`, `power_off`, `rename`, `update_settings`,
-`remove`, `set_thumbnail`, `screenshot`, `cancel`, `shutdown`), a response for each, and events in between
+`remove`, `set_thumbnail`, `screenshot`, `orientation`, `cancel`, `shutdown`), a response for each, and events in between
 (`state`, `device`, `removed`, `progress`, `usb`, `log`, `warning`). The protocol is described at the top of
 `skeuo/serve.py`.
 

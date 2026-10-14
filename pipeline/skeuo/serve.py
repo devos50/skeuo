@@ -45,6 +45,9 @@ Requests (params, then result):
   remove         {"device"}                             {}: moves the bundle to the trash
   set_thumbnail  {"device", "png": base64}              {"device"}
   screenshot     {"device"}                             {"png": base64}: the running device's screen
+  orientation    {"device", "orientation"}              {"orientation"}: how the running device is held ("flat",
+                                                        "portrait", "landscape-right", "portrait-upside-down",
+                                                        "landscape-left"); sets it when given
   cancel         {"request": id}                        {}: cancels a running download_ipsw or create download
   shutdown       {}                                     {}: suspends the running device and exits
 """
@@ -553,6 +556,14 @@ class Daemon:
                 return {"png": base64.b64encode(f.read()).decode()}
         finally:
             os.remove(path)
+
+    def do_orientation(self, params):
+        device_id = params.get("device")
+        with self.lock:
+            if self.running != device_id or self.run_state != "running":
+                raise RequestError("not_running", "%s is not running" % device_id)
+            emu = self.session.emu
+        return {"orientation": emu.orientation(params.get("orientation"))}
 
     def do_shutdown(self, params):
         threading.Thread(target=self.shutdown, daemon=True).start()
