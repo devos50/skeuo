@@ -115,7 +115,9 @@ class QMP:
 
 
 class Emulator:
-    """dfu: hold the force-DFU GPIO so the bootrom enters DFU mode.
+    """bootrom: an S5L8720 bootrom dump, or None: the emulator then starts LLB from the NOR (or boot_image) itself.
+    dfu: hold the force-DFU GPIO so the bootrom enters DFU mode (needs the bootrom).
+    boot_image: an IMG3 image to start instead of LLB from the NOR, without a bootrom: iBSS for a restore.
     display: show the QEMU window instead of running headless.
     vnc: serve the screen and take input over VNC on 127.0.0.1 instead, also as a WebSocket, both on free ports
     (vnc_port, websocket_port). The app draws the screen itself this way.
@@ -127,22 +129,30 @@ class Emulator:
     fingerprint is what a saved state belongs to: QEMU's digest and its arguments without the host-side details
     (file paths, ports, the window or VNC server, the clock), which may differ between saving and loading."""
 
-    def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, display=False, vnc=False,
-                 wifi_mac=None, audio=True, boot_args=None, extra_args=(), incoming=False, clock=None):
+    def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, boot_image=None,
+                 display=False, vnc=False, wifi_mac=None, audio=True, boot_args=None, extra_args=(), incoming=False,
+                 clock=None):
         if not os.path.exists(qemu):
             raise EmulatorError("QEMU not found at %s" % qemu)
-        if not os.path.exists(bootrom):
+        if bootrom and not os.path.exists(bootrom):
             raise EmulatorError("bootrom not found at %s" % bootrom)
+        if dfu and not bootrom:
+            raise EmulatorError("DFU mode needs the bootrom")
         self.port = free_port()
         self.qmp_port = free_port()
         self.vnc_port = self.websocket_port = None
         self.serial_log = os.path.join(logdir, "serial.log")
 
         def command(host):
-            machine = "iPod-Touch,bootrom=%s,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
-                host["bootrom"], host["disk"], host["overlay"], nand_epoch, host["nor"])
+            machine = "iPod-Touch,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
+                host["disk"], host["overlay"], nand_epoch, host["nor"])
+            # only used at a reset, so it's not part of the fingerprint: a state saved with it loads without it
+            if host.get("bootrom"):
+                machine += ",bootrom=" + host["bootrom"]
             if dfu:
                 machine += ",dfu=on"
+            if boot_image:
+                machine += ",boot-image=" + host["boot_image"]
             if boot_args:
                 # QEMU's option parser takes a doubled comma as a literal one
                 machine += ",boot-args=" + boot_args.replace(",", ",,")
@@ -160,9 +170,10 @@ class Emulator:
                 cmd += ["-audio", "none"]
             return cmd + list(extra_args)
 
-        host = {"bootrom": bootrom, "disk": disk, "overlay": overlay, "nor": nor, "serial": self.serial_log,
+        host = {"disk": disk, "overlay": overlay, "nor": nor, "boot_image": boot_image, "serial": self.serial_log,
                 "port": self.port, "qmp_port": self.qmp_port}
         self.fingerprint = {"qemu": file_digest(qemu), "args": command({k: "<%s>" % k for k in host})}
+        host["bootrom"] = bootrom
         cmd = [qemu] + command(host)
         if not display:
             cmd += ["-display", "none"]

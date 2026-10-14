@@ -12,7 +12,8 @@ and gets one response per request, with the same id, once the request is done:
 
 Requests run concurrently, so responses can come in any order. Between them come events, which have no id:
 
-  {"event": "ready", "protocol": 1, "library": ..., "bootrom": true}       once, at startup
+  {"event": "ready", "protocol": 1, "library": ..., "bootrom": false}      once, at startup; bootrom: devices boot
+                                                                             through a bootrom dump (optional)
   {"event": "state", "device": id, "state": "running", "vnc": {...}}         see STATES
   {"event": "device", "device": {...}}                                       a device was added or changed
   {"event": "removed", "device": id}
@@ -130,7 +131,8 @@ class Daemon:
     def __init__(self, library, qemu, bootrom, cache, usbmuxd, pair_records, out):
         self.library = library
         self.qemu = qemu
-        self.bootrom = bootrom
+        # optional: devices boot through it when it's there, and without it otherwise
+        self.bootrom = bootrom if bootrom and os.path.exists(bootrom) else None
         self.cache = cache
         self.usbmuxd = usbmuxd
         self.pair_records = pair_records
@@ -323,8 +325,6 @@ class Daemon:
         return {}
 
     def do_create(self, params, request_id):
-        if not self.bootrom or not os.path.exists(self.bootrom):
-            raise RequestError("no_bootrom", "the S5L8720 bootrom is needed to create a device")
         name = (params.get("name") or "").strip()
         product = params.get("product") or "iPod2,1"
         if product not in DEVICE_TYPES:
@@ -397,8 +397,6 @@ class Daemon:
 
     def do_run(self, params):
         device_id = params.get("device")
-        if not self.bootrom or not os.path.exists(self.bootrom):
-            raise RequestError("no_bootrom", "the S5L8720 bootrom is needed to run a device")
         bundle = self.open_bundle(device_id)
         with self.lock:
             if self.closing:
@@ -635,7 +633,7 @@ class Daemon:
 
     def serve(self, stdin):
         self.event("ready", protocol=PROTOCOL, library=self.library, cache=self.cache,
-                   bootrom=bool(self.bootrom and os.path.exists(self.bootrom)), usbmuxd=self.usbmuxd)
+                   bootrom=bool(self.bootrom), usbmuxd=self.usbmuxd)
 
         def read():
             for line in stdin:

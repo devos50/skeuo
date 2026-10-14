@@ -7,8 +7,9 @@ Skeuo: classic iPhone OS in an emulator.
   python3 -m skeuo download <version>         download a restore IPSW from Apple into the cache
   python3 -m skeuo serve                      the daemon for the Skeuo app: JSON lines over stdio (see serve.py)
 
-The emulator needs the S5L8720 bootrom, which Skeuo does not ship: pass --bootrom or set SKEUO_BOOTROM. QEMU is
-found through --qemu, SKEUO_QEMU, or the emulator submodule's build directory.
+The emulator starts the firmware itself; Apple's S5L8720 bootrom is optional (--bootrom or SKEUO_BOOTROM), for
+comparing with the real boot path. QEMU is found through --qemu, SKEUO_QEMU, or the emulator submodule's build
+directory.
 """
 import argparse
 import os
@@ -40,16 +41,11 @@ def add_emulator_arguments(parser):
     parser.add_argument("--qemu", default=os.environ.get("SKEUO_QEMU", DEFAULT_QEMU),
                         help="qemu-system-arm with the iPod Touch machine (default: %(default)s)")
     parser.add_argument("--bootrom", default=os.environ.get("SKEUO_BOOTROM"),
-                        help="S5L8720 bootrom dump (default: $SKEUO_BOOTROM)")
-
-
-def check_emulator_arguments(parser, args):
-    if not args.bootrom:
-        parser.error("the bootrom is needed: pass --bootrom or set SKEUO_BOOTROM")
+                        help="optional S5L8720 bootrom dump to boot through, instead of starting the firmware "
+                             "directly (default: $SKEUO_BOOTROM)")
 
 
 def cmd_restore(parser, args):
-    check_emulator_arguments(parser, args)
     if args.device_certificate and args.lockdown:
         parser.error("--device-certificate and --lockdown exclude each other")
     device_certificate = load_device_certificate(args.device_certificate) if args.device_certificate else None
@@ -65,7 +61,6 @@ def cmd_restore(parser, args):
 
 
 def cmd_run(parser, args):
-    check_emulator_arguments(parser, args)
     bundle = Bundle.open(args.bundle)
     session = Session(bundle, args.qemu, args.bootrom, display=not args.headless, extra_args=args.qemu_args,
                       cold_boot=args.cold_boot, log=log)

@@ -1,9 +1,10 @@
 """
-Restores a device bundle from an IPSW, the way iTunes restores a new device: the bootrom takes iBSS over DFU, iBSS
-loads iBEC, iBEC boots the restore ramdisk, and restored on the ramdisk partitions the NAND, writes the root
+Restores a device bundle from an IPSW, the way iTunes restores a new device: the emulator starts iBSS (or, given the
+bootrom, the bootrom takes iBSS over DFU), iBSS loads iBEC, iBEC boots the restore ramdisk, and restored on the ramdisk partitions the NAND, writes the root
 filesystem it receives through asr and flashes the NOR images. The bundle starts out as a factory-new device: an
 empty disk (which the emulator presents as a formatted, empty NAND) and a NOR with only the factory data.
 """
+import os
 import shutil
 import struct
 import tempfile
@@ -31,16 +32,17 @@ class Steps:
         return result
 
 
-def boot_ramdisk(emu, link, ipsw, step):
-    ibss = ipsw.dfu_image("iBSS")
+def boot_ramdisk(emu, link, ipsw, step, dfu):
+    """dfu: upload iBSS to the bootrom's DFU mode; otherwise the emulator started it."""
     ibec = ipsw.dfu_image("iBEC")
     device_tree = ipsw.device_tree()
     ramdisk = ipsw.restore_ramdisk()
     kernel = ipsw.kernelcache()
 
     def to_recovery():
-        enumerate_device(link, DFU_PID)
-        dfu_upload(link, ibss)
+        if dfu:
+            enumerate_device(link, DFU_PID)
+            dfu_upload(link, ipsw.dfu_image("iBSS"))
         wait_for(lambda: "Entering recovery mode" in emu.serial(), 20, "iBSS to enter recovery mode")
 
     def ibss_loads_ibec():
@@ -76,7 +78,7 @@ def boot_ramdisk(emu, link, ipsw, step):
         except (USBNoDevice, USBTimeout):
             pass
 
-    step("DFU upload of iBSS", to_recovery)
+    step("DFU upload of iBSS" if dfu else "iBSS starts", to_recovery)
     step("iBSS loads iBEC", ibss_loads_ibec)
     step("iBEC enumerates", ibec_ready)
     step("upload device tree", load_device_tree)
@@ -105,10 +107,11 @@ def run_restored(emu, ipsw, log):
     return udid
 
 
-def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, device_certificate=None, name=None, settings=None,
+def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certificate=None, name=None, settings=None,
             log=print):
     """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object). device_certificate: a PEM device
-    certificate from Apple to activate with (see activation.py). name and settings: see bundle.py."""
+    certificate from Apple to activate with (see activation.py). name and settings: see bundle.py. bootrom: an
+    S5L8720 bootrom dump to start iBSS through its DFU mode, None to let the emulator start it."""
     device = identity.generate()
     bundle = Bundle.create(bundle_path, ipsw, device, name=name, settings=settings)
     if device_certificate:
@@ -124,20 +127,29 @@ def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, device_certificate=
             f.write(nor.factory_nor(identity.syscfg(device), identity.nvram_env(device)))
 
         log("restoring %s as serial number %s" % (ipsw, device["serial_number"]))
-        emu = Emulator(qemu, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
-                       dfu=True, wifi_mac=device["wifi_mac"])
+        ibss = None
+        if not bootrom:
+            ibss = os.path.join(bundle.path, "iBSS.img3")
+            with open(ibss, "wb") as f:
+                f.write(ipsw.dfu_image("iBSS"))
         try:
-            link = emu.connect()
+            emu = Emulator(qemu, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
+                           dfu=bool(bootrom), boot_image=ibss, wifi_mac=device["wifi_mac"])
             try:
-                boot_ramdisk(emu, link, ipsw, step)
+                link = emu.connect()
+                try:
+                    boot_ramdisk(emu, link, ipsw, step, dfu=bool(bootrom))
+                finally:
+                    link.close()
+                device["udid"] = run_restored(emu, ipsw, log)
+                bundle.save()
+            except USBError as e:
+                raise EmulatorError("USB: %s" % e)
             finally:
-                link.close()
-            device["udid"] = run_restored(emu, ipsw, log)
-            bundle.save()
-        except USBError as e:
-            raise EmulatorError("USB: %s" % e)
+                emu.stop()
         finally:
-            emu.stop()
+            if ibss:
+                os.remove(ibss)
         bundle.fold(log=log)
 
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)

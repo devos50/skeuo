@@ -5,7 +5,6 @@ Creates and runs virtual devices from IPSWs. A device is a *bundle*: a directory
 runs.
 
 ```bash
-export SKEUO_BOOTROM=/path/to/s5l8720-bootrom.bin
 export SKEUO_QEMU=/path/to/qemu-system-arm   # default: ../emulator/build/qemu-system-arm
 
 python3 -m skeuo download 2.1.1          # from Apple, into the IPSW cache
@@ -14,6 +13,10 @@ python3 -m skeuo run ~/Skeuo/my-ipod
 ```
 
 Run the commands from this directory (or put it on `PYTHONPATH`). Only the Python standard library is needed.
+
+Apple's S5L8720 bootrom isn't needed: the emulator starts the first boot stage itself, the way the bootrom would (LLB
+from the NOR, or iBSS for a restore). To boot through a bootrom dump instead, for comparing with the real thing, pass
+`--bootrom` or set `SKEUO_BOOTROM`; a restore then goes through the bootrom's DFU mode.
 
 ## Downloading IPSWs
 
@@ -31,9 +34,9 @@ sold through the iTunes Store, and its IPSW was never on a public URL, so a 3.0 
 1. Creates a factory-new device with its own identity: a random serial number and MAC addresses (`identity.py`), an
    empty disk image, which the emulator presents as a formatted, empty NAND (`nand.py`), and a NOR with only the
    factory data, i.e. syscfg and NVRAM (`nor.py`).
-2. Boots the emulator in DFU mode and restores like iTunes: iBSS over DFU, iBEC, the restore ramdisk and kernelcache,
-   then `restored` partitions the NAND, writes the root filesystem it gets through asr and flashes the NOR images
-   from the IPSW (`restore.py`, `restored.py`). This takes about a minute.
+2. Starts iBSS in the emulator (over DFU with `--bootrom`) and restores like iTunes: iBSS loads iBEC, iBEC the restore
+   ramdisk and kernelcache, then `restored` partitions the NAND, writes the root filesystem it gets through asr and
+   flashes the NOR images from the IPSW (`restore.py`, `restored.py`). This takes about a minute.
 3. Prepares the restored filesystems for the emulator (`prepare.py`): SpringBoard draws in software
    (`LK_ENABLE_MBX2D=0`), and the device is activated (`activation.py`).
 
@@ -144,7 +147,6 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
 
 ## Limitations
 
-- The bootrom is Apple's code, so it is not included.
 - Preparing the filesystems uses `hdiutil`, so `restore` runs on macOS only for now.
 - Activation is verified on 2.1.1 and 2.2 (Skeuo's certificates), and on 3.0 and 4.0 (patched lockdownd; 4.0 also with
   a device certificate from Apple). Bundles restored before the lockdownd patch stay as they were: 3.0 Unactivated
