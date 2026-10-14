@@ -1,7 +1,9 @@
 # Skeuo app: plan
 
 Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API), 2 (display/input spike) and
-3 (app skeleton, Svelte) 4 (create flow), 5 (device window) and 6 (edit, settings) done on 2026-10-14. Next: packaging (roadmap step 5). Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+3 (app skeleton, Svelte) 4 (create flow), 5 (device window) and 6 (edit, settings) done on 2026-10-14. Packaging (roadmap step 5) is postponed
+(Martijn, 2026-10-14): first, booting without the bootrom (docs/bootrom-free-kickoff-prompt.md), which removes the
+app's first-run bootrom step. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
 and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
