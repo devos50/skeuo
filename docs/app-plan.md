@@ -3,7 +3,7 @@
 Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API), 2 (display/input spike) and
 3 (app skeleton, Svelte) 4 (create flow), 5 (device window) and 6 (edit, settings) done on 2026-10-14. Booting without the bootrom
 (docs/bootrom-free-kickoff-prompt.md) done on 2026-10-14: the first-run bootrom step is gone. Next: packaging (roadmap
-step 5). Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+step 5, docs/packaging-plan.md). Roadmap step 4 (app shell), after IPSW → bundle automation (done)
 and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
