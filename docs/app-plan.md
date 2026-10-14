@@ -1,7 +1,7 @@
 # Skeuo app: plan
 
-Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API) and 2 (display/input spike) done
-on 2026-10-14; milestone 3 (app skeleton) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API), 2 (display/input spike) and
+3 (app skeleton, Svelte) done on 2026-10-14; milestone 4 (create flow) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
 and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
@@ -108,7 +108,7 @@ The app's own settings (library path, bootrom location, IPSW cache) live in the 
    (the fingertip offset in `ipod_touch_multitouch.c` must still hold) and the buttons. Try it in Tauri's webviews
    (WebKit on macOS, WebView2, WebKitGTK).
 3. **App skeleton.** A Tauri project in `app/`: it starts the daemon, with the gallery, the first-run bootrom step and
-   start/suspend.
+   start/suspend. *Done 2026-10-14 with Svelte 5, see `app/README.md`.*
 4. **Create flow.** The new-emulator dialog, the IPSW download from Apple, and the background restore with progress.
 5. **Device window polish.** Frame, scaling, rotation (rotate the frame along with the accelerometer), shortcuts,
    screenshots, live thumbnails.
@@ -134,9 +134,21 @@ notarization, and Windows/Linux builds.
 - A 2.1.1 bundle whose activation cache got lost shows "Connect to iTunes" (BrickState) and then sleeps; see the
   activation notes. The old `~/Skeuo/ipod-2.1.1` is in that state.
 
+## What milestone 3 settled (2026-10-14)
+
+- Front end: **Svelte 5** (chosen 2026-10-14) with Vite; no SvelteKit. Rust updated to 1.99, Tauri 2.12, the Tauri CLI
+  as a dev dependency (`npm run tauri dev`).
+- The Rust side stays thin: it spawns the daemon, relays requests (`rpc`) and events (`daemon`), checks and stores the
+  bootrom, opens a window per running device (index.html?device=…&ws=…) and closes it when the device stops.
+  Thumbnails reach the gallery as raw bytes through a command, so no asset-protocol scope is needed.
+- The bootrom is pinned by SHA-256 (SecureROM iBoot-240.4, 64 KB) and copied to `<data dir>/Skeuo/bootrom.bin`; the
+  IPSW cache is `<data dir>/Skeuo/ipsw`, the same default the pipeline uses.
+- Closing a device window sends the last lit frame as the thumbnail, then suspends. Quitting the app closes the
+  daemon's stdin, which suspends the running device.
+- Not yet: the "+" card and create dialog (milestone 4), Edit/Remove (6), a drawn device frame and scaling presets (5).
+
 ## Open questions
 
-- Svelte or React for the front end (pick one in milestone 3).
 - WebView2 and WebKitGTK still have to be tried with the spike page.
 - How much RAM a device needs (`-m 2G` today; could be smaller).
 - Device frame artwork: generic, drawn by us, to avoid Apple's trade dress.
