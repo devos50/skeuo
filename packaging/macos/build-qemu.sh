@@ -5,6 +5,8 @@
 # bundle-qemu.sh then copies them next to the binary.
 #
 #   packaging/macos/build-qemu.sh [build dir]     default: packaging/macos/build/qemu
+#
+# A build directory that is already configured is only rebuilt; remove it after changing the options below.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,7 +16,7 @@ export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0}
 
 mkdir -p "$build"
 cd "$build"
-"$src/configure" \
+[ -f build.ninja ] || "$src/configure" \
     --target-list=arm-softmmu \
     --disable-debug-info --enable-strip \
     --enable-slirp --enable-faad2 --enable-mpg123 --enable-cocoa --enable-vnc --audio-drv-list=coreaudio \

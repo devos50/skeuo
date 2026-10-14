@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "../../packaging/macos/build/stage/pipeline/": "pipeline/",
+      "../../packaging/macos/build/stage/python/": "python/",
+      "../../packaging/macos/build/stage/qemu/": "qemu/"
+    }
+  }
+}
