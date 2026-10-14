@@ -42,11 +42,13 @@ def log(msg):
 
 
 class DeviceManager:
-    """Owns the link to QEMU and the mux device on it, if any."""
+    """Owns the link to QEMU and the mux device on it, if any. port can change between runs (None: no QEMU), and
+    on_change(properties or None) is called when a device attaches or detaches."""
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, on_change=None):
         self.host = host
         self.port = port
+        self.on_change = on_change
         self.mux = None
         self.device_id = 0
         self.properties = None
@@ -58,8 +60,13 @@ class DeviceManager:
     def _run(self):
         waiting = False
         while True:
+            port = self.port
+            if port is None:
+                waiting = False
+                time.sleep(0.5)
+                continue
             try:
-                link = USBLink(self.host, self.port)
+                link = USBLink(self.host, port)
             except (OSError, USBError):
                 time.sleep(1)
                 continue
@@ -96,6 +103,8 @@ class DeviceManager:
         self.attached.set()
         for client in listeners:
             client.send_attached(self.device_id, self.properties)
+        if self.on_change:
+            self.on_change(self.properties)
 
     def _detach(self):
         with self._lock:
@@ -104,7 +113,12 @@ class DeviceManager:
         self.attached.clear()
         log("device %d detached" % device_id)
         for client in listeners:
-            client.send_message({"MessageType": "Detached", "DeviceID": device_id})
+            try:
+                client.send_message({"MessageType": "Detached", "DeviceID": device_id})
+            except OSError:
+                pass
+        if self.on_change:
+            self.on_change(None)
 
     def current(self):
         with self._lock:
@@ -308,12 +322,12 @@ def make_server(address):
     return server
 
 
-def start_bridge(listen, host="127.0.0.1", port=1235, pair_records=DEFAULT_PAIR_RECORDS):
+def start_bridge(listen, host="127.0.0.1", port=1235, pair_records=DEFAULT_PAIR_RECORDS, on_change=None):
     """Serves the usbmuxd protocol on listen in background threads and
     returns the DeviceManager."""
     records = PairRecords(pair_records)
-    devices = DeviceManager(host, port)
     server = make_server(listen)
+    devices = DeviceManager(host, port, on_change=on_change)
 
     def accept_loop():
         while True:

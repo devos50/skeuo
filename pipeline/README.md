@@ -8,11 +8,23 @@ runs.
 export SKEUO_BOOTROM=/path/to/s5l8720-bootrom.bin
 export SKEUO_QEMU=/path/to/qemu-system-arm   # default: ../emulator/build/qemu-system-arm
 
-python3 -m skeuo restore iPod2,1_2.1.1_5F138_Restore.ipsw ~/Skeuo/my-ipod
+python3 -m skeuo download 2.1.1          # from Apple, into the IPSW cache
+python3 -m skeuo restore ~/Library/Application\ Support/Skeuo/ipsw/iPod2,1_2.1.1_5F138_Restore.ipsw ~/Skeuo/my-ipod
 python3 -m skeuo run ~/Skeuo/my-ipod
 ```
 
 Run the commands from this directory (or put it on `PYTHONPATH`). Only the Python standard library is needed.
+
+## Downloading IPSWs
+
+`download <version>` fetches a restore IPSW from Apple's servers into the IPSW cache (`~/Library/Application
+Support/Skeuo/ipsw` on macOS, `$XDG_DATA_HOME/Skeuo/ipsw` on Linux, `%LOCALAPPDATA%\Skeuo\ipsw` on Windows, or
+`$SKEUO_IPSW_CACHE`); `download --list` shows what is there. An interrupted download resumes where it stopped. A
+finished one is checked against the size and MD5 (the ETag) that Apple's server reports, and against a known SHA-1:
+Apple's version catalog no longer lists checksums for these old versions (`skeuo/download.py`).
+
+Apple still serves 2.1.1, 2.2 and 4.0 for the iPod touch 2G. iPhone OS 3.0 was a paid upgrade for the iPod touch,
+sold through the iTunes Store, and its IPSW was never on a public URL, so a 3.0 device needs an IPSW you have.
 
 ## What `restore` does
 
@@ -31,9 +43,17 @@ writes go to `overlay/`; they are folded into `disk.img` when it powers off, or 
 (not while it is suspended, see below).
 Bundles from before this format (one file per NAND page in `nand/`) are converted when they are opened.
 
+## Names, settings and thumbnails
+
+`device.json` also holds the name the app shows (`"name"`, by default "iPod touch (iPhone OS 2.1.1)"; the directory
+keeps its name) and the device's `"settings"`: `wifi`, `audio` and `usbmuxd` (libimobiledevice access), all on by
+default. Wi-Fi and audio change QEMU's command line, so they can't change while a device is suspended without
+discarding its state. The app keeps the gallery picture in `<bundle>/thumbnail.png`. Bundles from before these
+existed get the defaults when they are read. `restore --name` names a new device.
+
 ## Running, suspending and resuming
 
-`run` boots the bundle with a window and serves it to libimobiledevice through a built-in usbmuxd
+`run` boots the bundle with a window (or `--headless`) and serves it to libimobiledevice through a built-in usbmuxd
 (`USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`). Only one `run` can use a bundle at a time (`<bundle>/.lock`).
 
 Stopping a run suspends the device, like closing a laptop: Ctrl-C, SIGTERM, closing the window or quitting QEMU
@@ -62,6 +82,26 @@ finish leaves no record, so its state file is ignored and removed.
 
 The guest keeps its calendar in RAM, so after a resume it continues from the time it was suspended at. A device whose clock starts at a fixed date (see Activation) resumes its clock at the time it was suspended, so it
 doesn't jump back to that date, unless that is less than a day before its certificate expires.
+
+## The daemon for the app
+
+`serve` runs the pipeline as a daemon for the Skeuo app. It speaks JSON lines over stdin and stdout: requests with
+an id (`list`, `ipsws`, `download_ipsw`, `create`, `run`, `suspend`, `power_off`, `rename`, `update_settings`,
+`remove`, `set_thumbnail`, `screenshot`, `cancel`, `shutdown`), a response for each, and events in between
+(`state`, `device`, `removed`, `progress`, `usb`, `log`, `warning`). The protocol is described at the top of
+`skeuo/serve.py`.
+
+```bash
+python3 -m skeuo serve --library ~/Skeuo
+{"id": 1, "method": "run", "params": {"device": "my-ipod"}}
+```
+
+The daemon owns the library (`~/Skeuo` by default): a device is a bundle directory in it, and its id is the
+directory's name. Only one device runs at a time. It runs without a window: QEMU serves the screen and takes touch
+and button input over VNC on 127.0.0.1, also as a WebSocket, on free ports that the `running` state event reports;
+there is no VNC password. The window, the VNC server and their ports aren't part of a saved state's fingerprint,
+so a device suspended by `run` resumes in the app and the other way round. `remove` moves a bundle to the trash.
+When stdin closes, because the app quit, the daemon suspends the running device and exits.
 
 ## Activation
 

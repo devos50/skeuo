@@ -28,6 +28,15 @@ class EmulatorError(Exception):
     pass
 
 
+_running = set()  # every QEMU this process started and hasn't stopped
+
+
+def kill_all():
+    """Kills the QEMUs that are still running, before the process exits (they run in their own session)."""
+    for emu in list(_running):
+        emu.stop()
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -108,21 +117,25 @@ class QMP:
 class Emulator:
     """dfu: hold the force-DFU GPIO so the bootrom enters DFU mode.
     display: show the QEMU window instead of running headless.
+    vnc: serve the screen and take input over VNC on 127.0.0.1 instead, also as a WebSocket, both on free ports
+    (vnc_port, websocket_port). The app draws the screen itself this way.
+    audio: play the device's audio on the host; False gives it a silent audio backend.
     boot_args: the kernel arguments iBoot passes on a normal boot, None for the emulator's default.
     incoming: wait for resume() to load a saved state instead of booting.
     clock: the -rtc base= date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS), None for the host's.
 
     fingerprint is what a saved state belongs to: QEMU's digest and its arguments without the host-side details
-    (file paths, ports, the window, the clock), which may differ between saving and loading."""
+    (file paths, ports, the window or VNC server, the clock), which may differ between saving and loading."""
 
-    def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, display=False, wifi_mac=None,
-                 boot_args=None, extra_args=(), incoming=False, clock=None):
+    def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, display=False, vnc=False,
+                 wifi_mac=None, audio=True, boot_args=None, extra_args=(), incoming=False, clock=None):
         if not os.path.exists(qemu):
             raise EmulatorError("QEMU not found at %s" % qemu)
         if not os.path.exists(bootrom):
             raise EmulatorError("bootrom not found at %s" % bootrom)
         self.port = free_port()
         self.qmp_port = free_port()
+        self.vnc_port = self.websocket_port = None
         self.serial_log = os.path.join(logdir, "serial.log")
 
         def command(host):
@@ -143,6 +156,8 @@ class Emulator:
             if wifi_mac:
                 # the BCM4325 model reports the NIC's address as its own
                 cmd += ["-nic", "user,model=bcm4325,mac=%s" % wifi_mac.lower()]
+            if not audio:
+                cmd += ["-audio", "none"]
             return cmd + list(extra_args)
 
         host = {"bootrom": bootrom, "disk": disk, "overlay": overlay, "nor": nor, "serial": self.serial_log,
@@ -151,6 +166,11 @@ class Emulator:
         cmd = [qemu] + command(host)
         if not display:
             cmd += ["-display", "none"]
+        if vnc:
+            # -vnc takes a display number, the port minus 5900; ephemeral ports are far above that
+            self.vnc_port = free_port()
+            self.websocket_port = free_port()
+            cmd += ["-vnc", "127.0.0.1:%d,websocket=127.0.0.1:%d" % (self.vnc_port - 5900, self.websocket_port)]
         if clock:
             cmd += ["-rtc", "base=" + clock]
         if incoming:
@@ -160,6 +180,7 @@ class Emulator:
         self.log = open(os.path.join(logdir, "qemu.log"), "w")
         # in its own session, so that a Ctrl-C in the terminal reaches only the pipeline, which suspends
         self.proc = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
+        _running.add(self)
 
     def serial(self):
         try:
@@ -245,6 +266,10 @@ class Emulator:
         if status != "running":
             qmp.execute("cont")
 
+    def screendump(self, path):
+        """Writes the screen as it is now (also while the backlight is off) to path as a PNG."""
+        self.control().execute("screendump", filename=path, format="png")
+
     def quit(self):
         try:
             self.control().execute("quit")
@@ -263,6 +288,7 @@ class Emulator:
         if self.proc.poll() is None:
             self.proc.kill()
         self.proc.wait()
+        _running.discard(self)
         if self.qmp:
             self.qmp.close()
         self.log.close()
