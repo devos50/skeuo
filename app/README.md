@@ -9,9 +9,10 @@ npm install
 SKEUO_QEMU=~/Documents/qemu-ios/build/qemu-system-arm npm run tauri dev
 ```
 
-Development needs Node and current Rust (Tauri 2.12 needs Rust 1.90 or later). The app starts `python3 -m skeuo serve`
-from `../pipeline`; set `SKEUO_PYTHON` or `SKEUO_PIPELINE` to use others. QEMU is found as the pipeline finds it
-(`SKEUO_QEMU`, or the emulator submodule's build directory).
+Development needs Node and current Rust (Tauri 2.12 needs Rust 1.90 or later). A debug build (`npm run tauri dev`)
+starts `python3 -m skeuo serve` from `../pipeline`, and QEMU is found as the pipeline finds it (`SKEUO_QEMU`, or the
+emulator submodule's build directory). A release build runs the Python, pipeline and QEMU in its resources instead
+(see `../packaging/macos`, which builds the DMG). `SKEUO_PYTHON`, `SKEUO_PIPELINE` and `SKEUO_QEMU` override each.
 
 ## What it does (milestones 3 to 6)
 

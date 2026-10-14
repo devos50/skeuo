@@ -1,6 +1,8 @@
 # Skeuo packaging and CI: plan
 
-Status: agreed (2026-10-14), roadmap step 5. Nothing is built yet.
+Status: agreed (2026-10-14), roadmap step 5. Steps 1-4 of the order of work are done (2026-10-14): `packaging/macos/package.sh`
+builds an ad-hoc signed DMG (see `packaging/macos/README.md`). The "Where things stand" section below is as it was
+when the plan was written.
 
 Decisions (Martijn, 2026-10-14):
 - Apple silicon only (arm64, macOS 13+).
@@ -151,7 +153,8 @@ Mostly straightforward, except one blocker:
 
 1. App: resource-relative paths for the pipeline, Python and QEMU (small; testable with a hand-assembled bundle).
 2. Release QEMU configure + the dylib bundling script (`packaging/macos/bundle-qemu.sh`), checked with `otool -L`
-   and a boot of 2.1.1 from the bundled binary.
+   and a boot of 2.1.1 from the bundled binary. Done; Homebrew's dylibs here need macOS 26, so reaching 13 needs
+   option 2 (or a build on macOS 13).
 3. Python standalone in the bundle, `tauri build` with `bundle.active` and the resources: an unsigned .app/.dmg that
    runs on a clean Mac (or a fresh user account without Homebrew on the PATH).
 4. A packaging script (`packaging/macos/`) that produces the ad-hoc signed DMG in one command, with the signing
