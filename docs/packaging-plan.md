@@ -1,6 +1,14 @@
 # Skeuo packaging and CI: plan
 
-Status: draft (2026-10-14), roadmap step 5. Nothing is built yet; the choices marked **Decide** are open.
+Status: agreed (2026-10-14), roadmap step 5. Nothing is built yet.
+
+Decisions (Martijn, 2026-10-14):
+- Apple silicon only (arm64, macOS 13+).
+- A standalone Python (python-build-standalone) in the bundle.
+- Signing and notarization once there is an Apple Developer account again; ad-hoc signed builds until then.
+- Auto-updates later.
+- No CI for now; the CI section below stays as the plan for later.
+- Skeuo is licensed GPL-3.0-or-later (LICENSE); the emulator keeps QEMU's GPLv2.
 
 Since the bootrom-free boot (qemu-ios d7729e5337) a Skeuo user needs nothing from Apple but the IPSWs, which the app
 downloads itself. So a package is: the app, the emulator, the pipeline and a Python to run it. No first-run step, no
@@ -62,14 +70,13 @@ Two ways to get those dylibs:
 2. **Static deps built from source** (later, if 1 bites): a small script builds the five libraries with a fixed
    deployment target and links them statically. More reproducible; more to maintain.
 
-**Decide:** Apple silicon only, or also Intel (a universal binary means building QEMU and its deps twice and
-`lipo`-ing; Python standalone has universal2 builds)? Proposed: arm64 only for the first release, macOS 13+.
+Decided: Apple silicon only, macOS 13+ (no universal binary).
 
 ### Python
 
-**Decide** between:
+Decided: python-build-standalone. The options were:
 
-- **python-build-standalone** (proposed): Astral's relocatable CPython (`install_only_stripped` builds), shipped
+- **python-build-standalone** (chosen): Astral's relocatable CPython (`install_only_stripped` builds), shipped
   in Resources. The pipeline runs unchanged as `python -m skeuo serve`, and the CLI (`restore`, `run`) stays usable
   from the bundled Python for people who want it. ~40 MB before trimming.
 - **Freezing the pipeline** (PyInstaller or Nuitka) into one `skeuo` executable: smaller and one file to sign, but
@@ -86,18 +93,15 @@ Two ways to get those dylibs:
   `com.apple.security.cs.disable-library-validation` on Python only). The app isn't sandboxed (it runs QEMU and
   Python as child processes and writes the library anywhere), which is fine outside the Mac App Store.
 - Notarization with `notarytool` (an App Store Connect API key), then staple the DMG.
-- **Decide:** an Apple Developer account ($99/year) for signing and notarization. Without one, the app can be
-  ad-hoc signed only, and users must right-click → Open the first time (and Gatekeeper blocks it on recent macOS
-  unless they allow it in System Settings). Proposed: get the account before any public release; internal builds can
-  be ad-hoc signed meanwhile.
-- Distribution: a DMG on GitHub Releases. **Decide:** updates through Tauri's updater plugin (signed update
-  manifests on GitHub Releases) now, or later. Proposed: later; a "new version" notice in the gallery is enough at
-  first.
+- Decided: an Apple Developer account comes later. Until then builds are ad-hoc signed, and users must allow the app
+  in System Settings (or right-click → Open) the first time. The signing steps are scripted so that a Developer ID
+  certificate only has to be plugged in.
+- Distribution: a DMG on GitHub Releases. Decided: auto-updates (Tauri's updater plugin) later.
 
-## CI (GitHub Actions)
+## CI (GitHub Actions) — later
 
-The repository is private, so macOS runner minutes count 10× against the plan's quota. **Decide** the triggers;
-proposed below.
+Decided: no CI for now. The plan for when it comes: the repository is private, so macOS runner minutes count 10×
+against the plan's quota.
 
 1. **Build** (every push to main and every PR): on `macos-14` (arm64), check out with the submodule; build QEMU
    (release configure, ccache keyed on the submodule commit), the frontend (`npm ci && npm run build`) and the app
@@ -131,14 +135,15 @@ Mostly straightforward, except one blocker:
 - Packages: an MSI or NSIS installer on Windows (Tauri builds both; Authenticode signing is another certificate),
   an AppImage and/or a .deb on Linux.
 
-## Licensing (needs a decision before any release)
+## Licensing
 
 - QEMU is GPLv2, and faad2 is GPL too: shipping the binary means offering its source. The submodule commit on a
   public qemu-ios branch, linked from the app's About box and the release notes, covers it, once qemu-ios `skeuo` is
   pushed with the release's commit.
 - Python (PSF), glib, pixman and mpg123 (LGPL, dynamically linked, so fine as dylibs), libslirp (BSD), Tauri (MIT/Apache).
-- **Decide:** Skeuo's own license (none yet), and whether the repository goes public. A GPL-compatible license
-  keeps things simple, since the emulator is GPL anyway.
+- Skeuo itself is GPL-3.0-or-later (LICENSE). It runs QEMU as a separate program, so the two licenses don't mix;
+  GPLv3 also accepts the Apache-2.0 crates the Rust app links, which GPLv2 wouldn't. Whether the repository goes
+  public is still open.
 - The emulator contains the per-firmware image keys (the GID key table, community-published). Not Apple's code, but
   worth a conscious decision before going public.
 
@@ -149,6 +154,7 @@ Mostly straightforward, except one blocker:
    and a boot of 2.1.1 from the bundled binary.
 3. Python standalone in the bundle, `tauri build` with `bundle.active` and the resources: an unsigned .app/.dmg that
    runs on a clean Mac (or a fresh user account without Homebrew on the PATH).
-4. CI build job, then the boot test job.
-5. Signing and notarization (needs the developer account), the package job, first DMG release.
+4. A packaging script (`packaging/macos/`) that produces the ad-hoc signed DMG in one command, with the signing
+   step ready for a Developer ID.
+5. Later: signing and notarization (with the developer account), CI, auto-updates.
 6. Phase 2: the HFS+ writer, then Windows and Linux.
