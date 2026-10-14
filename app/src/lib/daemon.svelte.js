@@ -11,6 +11,7 @@ export const library = $state({
   error: null,        // the last failed action, shown in the gallery
   thumbnails: {},     // id -> a counter that changes when the thumbnail does
   progress: {},       // id -> {phase: "download" | "restore", fraction, request} while a device is being created
+  downloads: {},      // version -> {fraction, request} while an IPSW downloads on its own (Settings)
 });
 
 export async function call(method, params = {}) {
@@ -55,10 +56,11 @@ export async function connect() {
         }
         case "progress":
           if (event.device) library.progress[event.device] = { phase: event.phase, fraction: event.fraction, request: event.request };
+          else if (event.version) library.downloads[event.version] = { fraction: event.fraction, request: event.request };
           break;
         case "device":
           if (event.device.state !== "creating") delete library.progress[event.device.id];
-          if (event.device.thumbnail) library.thumbnails[event.device.id] = (library.thumbnails[event.device.id] || 0) + 1;
+          library.thumbnails[event.device.id] = (library.thumbnails[event.device.id] || 0) + 1;
           upsert(event.device);
           break;
         case "removed":
@@ -111,4 +113,16 @@ export async function create(params) {
 export async function cancelCreate(id) {
   const progress = library.progress[id];
   if (progress) await call("cancel", { request: progress.request });
+}
+
+/** Downloads an IPSW into the cache on its own (Settings); progress shows in library.downloads. */
+export async function downloadIPSW(version) {
+  library.downloads[version] = { fraction: 0, request: null };
+  try {
+    await call("download_ipsw", { version });
+  } catch (e) {
+    if (e.code !== "cancelled") library.error = `Couldn't download ${version}: ${e.message || e}`;
+  } finally {
+    delete library.downloads[version];
+  }
 }

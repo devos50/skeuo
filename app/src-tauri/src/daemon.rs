@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -33,6 +33,8 @@ pub struct Daemon {
     child: Mutex<Child>,
     pending: Arc<Pending>,
     next_id: AtomicU64,
+    /// set when the app stops the daemon on purpose, so that its exit isn't reported
+    stopping: Arc<AtomicBool>,
 }
 
 impl Daemon {
@@ -56,6 +58,8 @@ impl Daemon {
         let pending: Arc<Pending> = Arc::new(Mutex::new(HashMap::new()));
 
         let reader_pending = pending.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let reader_stopping = stopping.clone();
         std::thread::spawn(move || {
             for line in stdout.lines().map_while(Result::ok) {
                 let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
@@ -79,7 +83,9 @@ impl Daemon {
             for (_, sender) in reader_pending.lock().unwrap().drain() {
                 let _ = sender.send(Err(RpcError::new("daemon_exited", "the Skeuo daemon stopped")));
             }
-            let _ = app.emit("daemon", json!({"event": "exited"}));
+            if !reader_stopping.load(Ordering::Relaxed) {
+                let _ = app.emit("daemon", json!({"event": "exited"}));
+            }
         });
 
         Ok(Arc::new(Daemon {
@@ -87,6 +93,7 @@ impl Daemon {
             child: Mutex::new(child),
             pending,
             next_id: AtomicU64::new(1),
+            stopping,
         }))
     }
 
@@ -108,6 +115,7 @@ impl Daemon {
 
     /// Closes the daemon's stdin, which makes it suspend the running device and exit, and waits for that.
     pub fn shutdown(&self) {
+        self.stopping.store(true, Ordering::Relaxed);
         self.stdin.lock().unwrap().take();
         let _ = self.child.lock().unwrap().wait();
     }

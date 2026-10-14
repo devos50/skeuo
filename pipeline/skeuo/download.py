@@ -105,6 +105,14 @@ def available(cache=None):
     return result
 
 
+def delete(version, cache=None):
+    """Removes the cached IPSW of version, and a partial download of it."""
+    path = os.path.join(cache or default_cache(), filename(version))
+    for name in (path, path + ".part", path + ".part.etag"):
+        if os.path.exists(name):
+            os.remove(name)
+
+
 def download(version, cache=None, progress=None, cancel=None):
     """Downloads the IPSW of version into the cache (if it isn't there yet) and returns its path.
     progress(done, total) is called as data arrives; a set cancel event stops the download, keeping what it has."""

@@ -100,6 +100,11 @@ class Bundle:
         return machine
 
     def set_thumbnail(self, png):
+        """Replaces the thumbnail; None removes it, so that the app draws its own."""
+        if png is None:
+            if os.path.exists(self.thumbnail):
+                os.remove(self.thumbnail)
+            return
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise BundleError("a thumbnail must be a PNG image")
         with open(self.thumbnail + ".part", "wb") as f:

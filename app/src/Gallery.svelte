@@ -2,15 +2,21 @@
   import { invoke } from "@tauri-apps/api/core";
   import { library, connect, start, act, cancelCreate } from "./lib/daemon.svelte.js";
   import CreateDialog from "./CreateDialog.svelte";
+  import EditDialog from "./EditDialog.svelte";
+  import SettingsDialog from "./SettingsDialog.svelte";
   import DeviceCard from "./DeviceCard.svelte";
   import Menu from "./Menu.svelte";
   import Confirm from "./Confirm.svelte";
 
-  let { library: path } = $props();
+  let { status, onstatus } = $props();
+  const path = $derived(status.library);
   let menu = $state(null);     // {x, y, items}
   let confirm = $state(null);  // {title, message, action, run}
   let selected = $state(null);
   let creating = $state(false);
+  let editing = $state(null);   // the id of the device in the Edit dialog
+  let settingsOpen = $state(false);
+  const editingDevice = $derived(library.devices.find((d) => d.id === editing));
 
   connect().catch((e) => (library.error = e.message || String(e)));
 
@@ -80,6 +86,7 @@
       run: () => powerOff(device),
     });
     items.push({ separator: true });
+    items.push({ label: "Edit…", run: () => (editing = device.id) });
     items.push({ label: `Show in ${fileManager}`, run: () => invoke("reveal", { path: device.path }) });
     items.push({ label: "Move to Trash…", disabled: running || device.in_use, run: () => remove(device) });
     menu = { x: e.clientX, y: e.clientY, items };
@@ -98,6 +105,9 @@
         Connected to libimobiledevice
       </p>
     {/if}
+    <button class="add" title="Settings" aria-label="Settings" onclick={() => (settingsOpen = true)}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
+    </button>
     <button class="add" title="New Device" aria-label="New Device" onclick={() => (creating = true)}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
     </button>
@@ -136,6 +146,12 @@
 
 {#if menu}
   <Menu {...menu} onclose={() => (menu = null)} />
+{/if}
+{#if editingDevice}
+  <EditDialog device={editingDevice} onclose={() => (editing = null)} />
+{/if}
+{#if settingsOpen}
+  <SettingsDialog {status} {onstatus} onclose={() => (settingsOpen = false)} />
 {/if}
 {#if creating}
   <CreateDialog onclose={() => (creating = false)} />

@@ -98,6 +98,8 @@ fn on_daemon_event(app: &AppHandle, event: &Value) {
 struct Status {
     bootrom: bool,
     library: PathBuf,
+    /// the app's data directory: bootrom.bin, settings.json, ipsw/
+    data: PathBuf,
     daemon: bool,
     error: Option<String>,
 }
@@ -107,6 +109,7 @@ fn status(state: State<App>) -> Status {
     Status {
         bootrom: state.bootrom().exists(),
         library: state.settings.lock().unwrap().library.clone(),
+        data: state.data.clone(),
         daemon: state.daemon.lock().unwrap().is_some(),
         error: state.daemon_error.lock().unwrap().clone(),
     }
@@ -148,6 +151,35 @@ fn bootrom_from_environment(state: &App) {
             eprintln!("skeuo: not using SKEUO_BOOTROM ({}): {e}", PathBuf::from(path).display());
         }
     }
+}
+
+/// Moves Skeuo to another library directory: saves the setting and restarts the daemon on it. Refused while a
+/// device runs, since restarting the daemon would suspend it.
+#[tauri::command]
+async fn set_library(app: AppHandle, state: State<'_, App>, path: PathBuf) -> Result<Status, String> {
+    if !path.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
+    if let Ok(daemon) = state.daemon() {
+        let list = daemon.call("list", json!({})).await.map_err(|e| e.message)?;
+        if !list["running"].is_null() {
+            return Err("A device is running. Suspend or power it off first.".into());
+        }
+    }
+    let settings = {
+        let mut settings = state.settings.lock().unwrap();
+        settings.library = path;
+        settings.clone()
+    };
+    std::fs::create_dir_all(&state.data).map_err(|e| e.to_string())?;
+    std::fs::write(state.data.join("settings.json"), serde_json::to_vec_pretty(&settings).unwrap())
+        .map_err(|e| e.to_string())?;
+    let old = state.daemon.lock().unwrap().take();
+    if let Some(old) = old {
+        tauri::async_runtime::spawn_blocking(move || old.shutdown()).await.map_err(|e| e.to_string())?;
+    }
+    start_daemon(&app);
+    Ok(status(state))
 }
 
 /// A request to the pipeline daemon (see pipeline/skeuo/serve.py).
@@ -326,6 +358,7 @@ pub fn run() {
             rpc,
             start_device,
             restart_device,
+            set_library,
             thumbnail,
             reveal,
             pick_path,

@@ -21,7 +21,7 @@
     <p class="muted">{status.error || "The Skeuo daemon isn't running."}</p>
   </div>
 {:else}
-  <Gallery library={status.library} />
+  <Gallery {status} onstatus={(s) => (status = s)} />
 {/if}
 
 <style>

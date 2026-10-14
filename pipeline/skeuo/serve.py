@@ -33,7 +33,8 @@ Requests (params, then result):
   device_types   {}                                     {"device_types": [{"product", "name", "versions"}]}: what
                                                         create can make, with each type's versions (as ipsws)
   ipsws          {}                                     {"ipsws": [...]}: the versions, cached or downloadable
-  download_ipsw  {"version"}                            {"path"}; progress events; cancel stops it
+  download_ipsw  {"version"}                            {"path"}; progress events (with "version"); cancel stops it
+  delete_ipsw    {"version"}                            {}: removes it (and a partial download) from the cache
   create         {"product", "name", "version" | "ipsw", "device_certificate", "lockdown", "nor_images", "settings"}
                                                         {"device"}; the device event comes first, then progress
   run            {"device", "cold_boot"}                {"device", "vnc": {"port", "websocket"}, "resumed"}
@@ -43,7 +44,7 @@ Requests (params, then result):
   update_settings {"device", "settings", "discard_state"}  {"device"}; settings that change the emulator's
                                                         command line need discard_state on a suspended device
   remove         {"device"}                             {}: moves the bundle to the trash
-  set_thumbnail  {"device", "png": base64}              {"device"}
+  set_thumbnail  {"device", "png": base64 or null}      {"device"}; null removes it
   screenshot     {"device"}                             {"png": base64}: the running device's screen
   orientation    {"device", "orientation"}              {"orientation"}: how the running device is held ("flat",
                                                         "portrait", "landscape-right", "portrait-upside-down",
@@ -219,6 +220,8 @@ class Daemon:
             "state": state,
             "settings": bundle.settings,
             "activation": "device_certificate" if info.get("device_certificate") else "skeuo",
+            "serial_number": info.get("identity", {}).get("serial_number"),
+            "udid": info.get("identity", {}).get("udid"),
             "thumbnail": bundle.thumbnail if os.path.exists(bundle.thumbnail) else None,
             "suspended_at": (bundle.suspended or {}).get("saved"),
             # run from somewhere else, e.g. `skeuo run` in a terminal
@@ -288,7 +291,7 @@ class Daemon:
             percent = done * 1000 // total
             if percent != last[0]:
                 last[0] = percent
-                self.event("progress", request=request_id, device=device_id, phase="download",
+                self.event("progress", request=request_id, device=device_id, phase="download", version=version,
                            fraction=round(done / total, 4), done=done, total=total)
 
         try:
@@ -300,6 +303,18 @@ class Daemon:
 
     def do_download_ipsw(self, params, request_id):
         return {"path": self._download(request_id, params.get("version"))}
+
+    def do_delete_ipsw(self, params):
+        version = params.get("version")
+        downloads.firmware(version)
+        with self.lock:
+            if any(info.get("version") == version for info in self.creating.values()):
+                raise RequestError("busy", "a device is being created from it")
+            downloading = bool(self.cancels)
+        if downloading and not downloads.cached(version, self.cache):
+            raise RequestError("busy", "it is being downloaded; cancel the download first")
+        downloads.delete(version, self.cache)
+        return {}
 
     def do_cancel(self, params):
         cancel = self.cancels.get(params.get("request"))
@@ -535,10 +550,12 @@ class Daemon:
     def do_set_thumbnail(self, params):
         device_id = params.get("device")
         bundle = self.bundle(device_id)
-        try:
-            png = base64.b64decode(params.get("png") or "", validate=True)
-        except ValueError:
-            raise RequestError("bad_request", "png must be base64")
+        png = params.get("png")
+        if png is not None:
+            try:
+                png = base64.b64decode(png, validate=True)
+            except ValueError:
+                raise RequestError("bad_request", "png must be base64")
         bundle.set_thumbnail(png)
         return {"device": self.changed(device_id, bundle)}
 
