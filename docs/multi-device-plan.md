@@ -1,0 +1,187 @@
+# Skeuo with more than one device: plan
+
+Status: agreed (2026-10-14). The first new device is the
+iPod touch 1G (S5L8900, `n45ap`, `iPod1,1`), whose emulator lives on the
+[`ipod_touch_1g` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/ipod_touch_1g).
+
+Decisions (Martijn, 2026-10-14):
+- The models both devices share are renamed after the chip family (`ipod_touch_spi.c` → `s5l87xx_spi.c`), in one
+  commit before the 1G's models arrive.
+- 1G firmware: 2.x and 3.x first; 1.1.x later, as its own step.
+- The 1G ships without Wi-Fi at first; Wi-Fi is a later capability.
+- Experimental devices are shown to every user, marked as experimental.
+
+## Where things stand
+
+- **Emulator, 2G** (`emulator/` = qemu-ios `skeuo`, d7729e5337): one machine, `iPod-Touch` (`TYPE_IPOD_TOUCH`,
+  `IPodTouchMachineState`), in `hw/arm/ipod_touch_2g.c` with ~35 `hw/arm/ipod_touch_*.c` device models. It is on
+  current upstream QEMU, saves every device model (suspend/resume), and starts LLB from the NOR without the bootrom.
+- **Emulator, 1G** (qemu-ios `ipod_touch_1g`, last commit 2023-11-07): 99 commits on QEMU from December 2021
+  (merge base 89f3bfa326). It reaches the kernel, draws the screen, and takes multitouch, home and power. It is not
+  ready for Skeuo:
+  - It boots through the S5L8900 bootrom, with the bootrom's address table patched to jump to its own routines, and
+    loads an already-decrypted iBoot from a file (`iboot=`), so a user would need two files from a real device.
+  - The NAND is a directory of files (`nand=`), not a disk image with an overlay like the 2G's `nand-disk` and
+    `nand-overlay`.
+  - The NOR is 1 MB of parallel CFI flash (`pflash_cfi02`), where the 2G has SPI NOR.
+  - No VMState (so no suspend), no USB link to the host (so no restore over USB, no usbmuxd), no audio, and the
+    machine is also called `iPod-Touch`, with `mc->desc = "iPod Touch"`.
+- **The same file names, with different contents.** The 1G branch has 21 `ipod_touch_*.c` files. 16 of them have a
+  2G counterpart that started from the same code and has grown 2-5× since (VMState, bootrom-free boot, fixes):
+  for example AES 134 → 627 lines, NAND 246 → 584, timer 142 → 364, USB OTG 616 → 934, LIS302DL 54 → 254. Five
+  exist only on the 1G: the 8900 engine (the S5L8900's IMG2/8900 container decryption), the ADM, the NAND ECC, the
+  LCD panel, and the machine `ipod_touch.c`.
+- **Pipeline**: the 2G is assumed in a handful of places. `ipsw.py` has `DEVICE_TYPES = {"iPod2,1": ...}`,
+  `download.py` the iPod2,1 firmware catalog, `nand.py` the 2G's VSVFL layout, `emulator.py` the
+  `-M iPod-Touch,...` string, `restore.py`/`emulator.py` the S5L8720 bootrom. The rest is already per product: a
+  bundle's `device.json` records `product`, `serve` has a `device_types` request and `create` takes a `product`.
+- **App**: the bootrom check in `lib.rs` (S5L8720 size and SHA-256), "iPod touch (2nd generation)" in
+  `EditDialog.svelte`, the key map in `DeviceWindow.svelte`, the S5L8720 text in `SettingsDialog.svelte`, and the
+  device frame.
+
+## Principle: one emulator, one Skeuo, a profile per device
+
+Devices differ in their chip, their device models, their firmware format and what they can do. Skeuo should know
+those differences in exactly one place per layer, and everything above it should ask instead of assume:
+
+```
+app          asks the pipeline what devices exist and what each can do
+  │ device_types (profiles)
+pipeline     one profile per product (iPod1,1, iPod2,1): firmware, NAND, restore, machine, capabilities
+  │ -M <machine>,<the machine contract's options>
+emulator     one qemu-system-arm, one machine per device, device models shared where the hardware is shared
+```
+
+## Emulator
+
+### Port the 1G forward; don't merge the branch
+
+The branch is 40,000 upstream commits behind `skeuo`, and its shared device models are early copies of the 2G's.
+Merging would mean reconciling both histories file by file and would still leave the 1G without suspend. Instead,
+port the 1G onto `skeuo` as a new machine, as a patch series like the 2G's ("hw/arm: ..."), taking from the 1G
+branch only what is specific to the S5L8900 and the 1G's board.
+
+Keep one `qemu-system-arm` with both machines. Two emulator builds would double the bundled emulator (~25 MB with its
+dylibs, packaging-plan.md) and every fix to a shared model would have to be made twice.
+
+### Machines
+
+- `iPod-Touch-2G` (the current `iPod-Touch`, renamed) and `iPod-Touch-1G`, in `hw/arm/ipod_touch_2g.c` and
+  `hw/arm/ipod_touch_1g.c`, each with its own state struct (`IPodTouch2GMachineState`, `IPodTouch1GMachineState`).
+- A machine file holds only its board: the memory map, the interrupt numbers, the GPIO wiring, which device models
+  it creates and how it connects them. The S5L8900 and S5L8720 constants go in `include/hw/arm/s5l8900.h` and
+  `include/hw/arm/s5l8720.h`.
+- Bundles don't store the machine name (the pipeline builds `-M` at every start), so the rename needs no migration.
+  `iPod-Touch` can stay as an alias of the 2G for a while for people running QEMU by hand.
+
+### Device models: shared where the hardware is shared
+
+- **The same IP block with small differences: one model.** Start from the 2G model (it has the VMState and the
+  fixes) and add the 1G's differences as qdev properties, set by the machine (a register's reset value, a FIFO depth,
+  a revision). Rename these after the chip family, not the device: `hw/arm/ipod_touch_spi.c` →
+  `hw/arm/s5l87xx_spi.c` and so on, type names `s5l87xx-spi`. Candidates, to be confirmed against the 1G branch:
+  SPI, timer, GPIO, VIC wiring, sysic, chip ID, SHA1, AES, USB OTG (the 1G branch's `s5l8900_usb_hwcfg` already
+  parameterizes the OTG core), TV out, SDIO.
+- **Separate chips on both boards: already shared.** The PCF50633 PMU and the LIS302DL accelerometer are the same
+  parts; the 1G uses the 2G models, with the 1G's I2C addresses and GPIOs set by the machine.
+- **Hardware that really differs: separate models.** The 8900 engine and the ADM (S5L8900 only), the 1G's NAND
+  controller and ECC, the 1G's LCD controller and panel, the first-generation multitouch controller, the 1G's clock
+  tree, and parallel NOR (QEMU's `pflash_cfi02`) instead of SPI NOR. Each new model gets VMState from the start.
+- Rename in a separate commit before the 1G models arrive, so the port's diffs stay readable, and add the commit to
+  `.git-blame-ignore-revs`.
+
+### The machine contract
+
+What the pipeline and the app rely on, written down in the emulator (`docs/system/arm/ipod-touch.rst`) and kept the
+same for every machine:
+
+- **Options**: `nand-disk`, `nand-overlay`, `nand-epoch`, `nor`, `usb-chardev`, `boot-image`, `boot-args`,
+  `bootrom`, `dfu`, and the `wifi`/`audio` settings. A machine that can't do one yet refuses it with a clear error
+  instead of ignoring it.
+- **QOM paths**: `/machine/accelerometer` with `orientation`, and any later ones, on every machine that has the part.
+- **Input**: the LCD model takes absolute pointer events; the same keys for home, power, volume, rotate and mute.
+- **Boot**: without a bootrom the machine starts the first boot stage from the NOR (or `boot-image`) itself. For the
+  1G that means the machine unpacks LLB from its container on the NOR (the 8900 engine's job) and runs it, as the 2G
+  does with IMG3, so neither the bootrom nor a decrypted iBoot is needed.
+- **Run states**: `-action shutdown=pause`, migration to a file for suspend, loading with `-incoming`.
+- **Identity**: `query-machines` and the machine's `desc` name the device ("iPod touch (1st generation)"), so the
+  pipeline can check that the QEMU it was given has the machine it needs.
+
+### Build
+
+`CONFIG_IPOD_TOUCH_1G` and `CONFIG_IPOD_TOUCH_2G` in `hw/arm/Kconfig`, both selecting `CONFIG_S5L87XX` for the
+shared models. The release build (packaging-plan.md) builds both.
+
+## Pipeline: device profiles
+
+A package `pipeline/skeuo/devices/` with one module per product and a registry:
+
+```python
+@dataclass(frozen=True)
+class Profile:
+    product: str            # "iPod1,1"
+    name: str               # "iPod touch (1st generation)"
+    board: str              # "n45ap"
+    soc: str                # "S5L8900"
+    machine: str            # "iPod-Touch-1G"
+    firmwares: dict         # version -> build, url, size, md5, sha1 (today's download.FIRMWARES)
+    bootrom: BootromSpec    # size and SHA-256 of the optional bootrom dump
+    image_format: str       # "img2" (8900 containers) or "img3"
+    nand: NandLayout        # geometry and FTL/VFL kind ("legacy", "vsvfl")
+    restore: str            # how a bundle is restored (see below)
+    capabilities: frozenset # {"wifi", "audio", "accelerometer", "suspend", "usbmux"}
+    support: str            # "supported" or "experimental"
+```
+
+- `ipsw.py`, `download.py`, `nand.py`, `emulator.py` and `restore.py` take the profile instead of the 2G's
+  constants; `devices.get(bundle.info["product"])` finds it for an existing bundle.
+- `device_types` returns the profiles (with capabilities and support level), so the app learns new devices without
+  changes of its own. `create` refuses a product without a profile, as it refuses an unknown one today.
+- Settings a device doesn't have are refused (`set_settings` with `audio` on a device without the capability).
+
+### Firmware for the 1G
+
+The iPod touch 1G shipped iPhone OS 1.1 to 3.1.3.
+
+- **2.x and 3.x** use the same restored protocol as the 2G, so the in-emulator restore should work once the machine
+  has the USB link, with the profile picking the 1G's NAND layout, image format and boot path. Target these first.
+  To check: which of these firmwares' files are IMG3 and which still come in 8900 containers on the S5L8900.
+- **1.1.x** uses 8900 containers and an older restore, with a different ramdisk and filesystem layout. Supporting it
+  probably means a second restore path (or building the NAND image offline). Decided: later, as its own step.
+- **Downloads**: which 1G IPSWs Apple still serves needs checking, as was done for the 2G (download.py). Like
+  iPhone OS 3.0 on the 2G, some 1G upgrades were paid and may never have been on a public URL; those need "pick a
+  local IPSW".
+
+## App
+
+- The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
+  the device step can stay hidden.
+- Per profile: the frame art (the 1G's chrome back and its bezel), the screen size (320×480 on both), the key map,
+  and which toggles the edit dialog shows (from the capabilities).
+- Settings holds one optional bootrom per chip: S5L8900 and S5L8720 are different files, checked against the
+  profile's `bootrom` instead of the constants in `lib.rs`.
+- Experimental devices are shown to everyone (decided), marked as such in the create dialog, on the device card and
+  in the edit dialog.
+- The 1G's profile has no `wifi` capability at first, so the edit dialog hides the toggle and the create dialog
+  leaves it off.
+
+## Support policy
+
+- A device is `experimental` until it restores and reaches SpringBoard for every firmware in its catalog, and
+  suspends and resumes. Experimental devices appear in the app (marked), so they get used and reported on, but
+  don't block a release.
+- When CI comes (packaging-plan.md), its boot test runs per profile; only `supported` profiles fail the build.
+
+## Order of work
+
+1. **Profiles with only the 2G.** `pipeline/skeuo/devices/` with the iPod2,1 profile, and the pipeline and app
+   reading from it. Changes no behaviour, and removes the 2G assumptions from the code that ships now.
+2. **The machine contract and the rename**, in the emulator: rename the 2G machine to `iPod-Touch-2G` (with the
+   alias), rename the shared models to `s5l87xx_*`, write the contract down. Update `emulator.py` to the new name.
+3. **The 1G machine on `skeuo`**, with stub regions for the parts not ported yet: first to LLB without the bootrom,
+   then iBoot, then the kernel on the serial log, then SpringBoard from a NAND image made by hand.
+4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
+5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
+6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
+7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), 1.1.x, and `supported` once the support policy's
+   bar is met.
