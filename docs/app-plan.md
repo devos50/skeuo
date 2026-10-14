@@ -1,7 +1,8 @@
 # Skeuo app: plan
 
-Status: planned (2026-10-13), decisions taken 2026-10-14, not started. Roadmap step 4 (app shell), after IPSW → bundle automation (done) and
-suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
+Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API) and 2 (display/input spike) done
+on 2026-10-14; milestone 3 (app skeleton) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
 
@@ -52,9 +53,15 @@ suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit 
   pipeline to Rust stays possible later; the RPC boundary makes it a drop-in.
 - **One device at a time**, so the usbmuxd bridge from `skeuo run` stays as it is (one device per bridge), owned by
   the daemon.
-- **IPSW download in the pipeline** (`skeuo download` / an RPC request): find the iPod2,1 restore IPSW URLs on Apple's
-  servers, download with resume and progress into a cache in the app's data directory, and check the checksum Apple
-  publishes. The app shows the versions it can download next to the ones already in the cache.
+- **IPSW download in the pipeline** (`skeuo download` / the `download_ipsw` request): the iPod2,1 restore IPSWs on
+  Apple's servers, downloaded with resume and progress into a cache in the app's data directory. The app shows the
+  versions it can download next to the ones already in the cache (the `ipsws` request).
+  - Apple still serves 2.1.1, 2.2 and 4.0 (`secure-appldnld.apple.com`, checked 2026-10-14). **3.0 isn't
+    downloadable:** it was a paid iPod touch upgrade from the iTunes Store and was never on a public URL (Apple's
+    catalog only names a `protected://` asset, for 3.1.3). The create dialog needs "pick a local IPSW" for 3.0.
+  - Apple's version catalog only lists a FirmwareSHA1 for the versions it still offers (4.1, 4.2.1). What Apple's
+    server does publish is the size and an ETag that is the file's MD5; a download is checked against those and a
+    pinned SHA-1 (which matches ipsw.me and a copy from 2008).
 
 ## Data model
 
@@ -92,11 +99,11 @@ The app's own settings (library path, bootrom location, IPSW cache) live in the 
 
 ## Milestones
 
-1. **Pipeline API.** Add `skeuo serve`: JSON-lines RPC over stdio with requests (list, create, run, suspend,
+1. **Pipeline API.** *Done 2026-10-14.* Add `skeuo serve`: JSON-lines RPC over stdio with requests (list, create, run, suspend,
    power_off, rename, update_settings, remove, set_thumbnail) and events (progress, state changes, device attached).
    Add `name`/`settings` to device.json, and make `run` usable without a window (`-display none -vnc …`) with the
    VNC/WebSocket port reported in an event. This can be tested without any GUI.
-2. **Display/input spike.** A bare HTML page with an RFB client (noVNC, or a small one of our own; RFB with raw/ZRLE
+2. **Display/input spike.** *Done 2026-10-14 on macOS, see `app/spike/README.md`.* A bare HTML page with an RFB client (noVNC, or a small one of our own; RFB with raw/ZRLE
    encoding at 320×480 is simple) against a running device. Measure latency and CPU, check touch accuracy
    (the fingertip offset in `ipod_touch_multitouch.c` must still hold) and the buttons. Try it in Tauri's webviews
    (WebKit on macOS, WebView2, WebKitGTK).
@@ -110,9 +117,27 @@ The app's own settings (library path, bootrom location, IPSW cache) live in the 
 Then packaging: bundle QEMU and its dylibs (glib, pixman, SDL can go, slirp, libpng), Python, code signing and
 notarization, and Windows/Linux builds.
 
+## What milestones 1 and 2 settled (2026-10-14)
+
+- `skeuo serve` (`pipeline/skeuo/serve.py`): JSON lines, requests answered out of order (each runs in its own thread),
+  events between them. Device id = bundle directory name. Besides the planned requests it has `ipsws`,
+  `download_ipsw`, `screenshot` (QMP screendump through the daemon, which holds the one QMP connection) and `cancel`
+  (for downloads). `create` reports the new device as "creating" first and keeps a failed restore as "incomplete"
+  (with its logs) for the app to remove. The run logic moved to `session.py`, shared with `skeuo run`.
+- Restore progress comes from the restore's log lines (`RESTORE_PROGRESS` in serve.py). A 2.1.1 create takes about a
+  minute: 10 s to boot the ramdisk, 15 s of asr, 20 s more of restored, 15 s of prepare.
+- The display: QEMU's VNC WebSocket and a small RFB client of our own (`app/spike/web/rfb.js`, raw + CopyRect) are
+  enough; noVNC isn't needed. Button presses need a minimum length (100 ms). VNC costs no measurable CPU; QEMU itself
+  uses a full core all the time, because the emulated CPU never idles — worth looking at separately (laptops).
+- Tauri: plain `cargo` builds it, no Tauri CLI needed for development. Tauri 2.12 needs Rust 1.90; the installed
+  1.85 builds Tauri 2.11 with the MSRV-aware resolver. For the app, update Rust first.
+- A 2.1.1 bundle whose activation cache got lost shows "Connect to iTunes" (BrickState) and then sleeps; see the
+  activation notes. The old `~/Skeuo/ipod-2.1.1` is in that state.
+
 ## Open questions
 
 - Svelte or React for the front end (pick one in milestone 3).
+- WebView2 and WebKitGTK still have to be tried with the spike page.
 - How much RAM a device needs (`-m 2G` today; could be smaller).
 - Device frame artwork: generic, drawn by us, to avoid Apple's trade dress.
 - Later: correct the guest clock after a resume.
