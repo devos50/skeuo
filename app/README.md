@@ -6,7 +6,7 @@ itself. Each running device gets a window that draws its screen from QEMU's VNC 
 
 ```bash
 npm install
-SKEUO_QEMU=~/Documents/qemu-ios/build/qemu-system-arm npm run tauri dev
+SKEUO_QEMU=~/Documents/qemu-ios/build/qemu-system-arm SKEUO_BOOTROM=/path/to/bootrom npm run tauri dev
 ```
 
 Development needs Node and current Rust (Tauri 2.12 needs Rust 1.90 or later). The app starts `python3 -m skeuo serve`
@@ -18,6 +18,8 @@ from `../pipeline`; set `SKEUO_PYTHON` or `SKEUO_PIPELINE` to use others. QEMU i
 - **First run:** asks for the S5L8720 bootrom (SecureROM iBoot-240.4, 64 KB), checks its SHA-256 and keeps a copy
   as `bootrom.bin` in `~/Library/Application Support/Skeuo` (the platform's data directory). The pipeline's IPSW
   cache is `ipsw/` there, and the app's settings are `settings.json` (for now only the library, default `~/Skeuo`).
+  When `SKEUO_BOOTROM` names a bootrom (as for the pipeline), the app imports that one at startup, with the same
+  check, and skips this step. The bootrom is Apple's code, so it is never part of the repository or the app bundle.
 - **Gallery:** every device in the library with its thumbnail, name, version and state. Double-click starts or
   resumes a device; while one runs, the others can't start. The context menu has Resume/Start, Restart (Cold Boot),
   Suspend, Power Off (with a confirmation) and Show in Finder.

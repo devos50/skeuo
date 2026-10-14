@@ -115,21 +115,39 @@ fn status(state: State<App>) -> Status {
 /// Checks the bootrom the user picked and keeps a copy in the app's data directory.
 #[tauri::command]
 fn import_bootrom(app: AppHandle, state: State<App>, bytes: Vec<u8>) -> Result<Status, String> {
+    store_bootrom(&state, &bytes)?;
+    start_daemon(&app);
+    Ok(status(state))
+}
+
+fn store_bootrom(state: &App, bytes: &[u8]) -> Result<(), String> {
     if bytes.len() != BOOTROM_SIZE {
         return Err(format!(
             "This file is {} bytes; the S5L8720 bootrom is {BOOTROM_SIZE} bytes.",
             bytes.len()
         ));
     }
-    let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let digest: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
     if digest != BOOTROM_SHA256 {
         return Err("This isn't the S5L8720 bootrom Skeuo needs (SecureROM iBoot-240.4): its SHA-256 differs.".into());
     }
     std::fs::create_dir_all(&state.data).map_err(|e| e.to_string())?;
     let part = state.bootrom().with_extension("part");
-    std::fs::write(&part, &bytes).and_then(|_| std::fs::rename(&part, state.bootrom())).map_err(|e| e.to_string())?;
-    start_daemon(&app);
-    Ok(status(state))
+    std::fs::write(&part, bytes).and_then(|_| std::fs::rename(&part, state.bootrom())).map_err(|e| e.to_string())
+}
+
+/// Without a bootrom yet, takes the one $SKEUO_BOOTROM names (as the pipeline does), so development skips the
+/// first-run step. The same check applies; a wrong file leaves the first-run step to ask.
+fn bootrom_from_environment(state: &App) {
+    if state.bootrom().exists() {
+        return;
+    }
+    if let Some(path) = std::env::var_os("SKEUO_BOOTROM") {
+        let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| store_bootrom(state, &bytes));
+        if let Err(e) = result {
+            eprintln!("skeuo: not using SKEUO_BOOTROM ({}): {e}", PathBuf::from(path).display());
+        }
+    }
 }
 
 /// A request to the pipeline daemon (see pipeline/skeuo/serve.py).
@@ -226,6 +244,7 @@ pub fn run() {
                 daemon: Mutex::new(None),
                 daemon_error: Mutex::new(None),
             });
+            bootrom_from_environment(&app.state::<App>());
             start_daemon(app.handle());
             Ok(())
         })
