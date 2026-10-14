@@ -105,11 +105,12 @@ def run_restored(emu, ipsw, log):
     return udid
 
 
-def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, device_certificate=None, log=print):
+def restore(ipsw, bundle_path, qemu, bootrom, lockdown=None, device_certificate=None, name=None, settings=None,
+            log=print):
     """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object). device_certificate: a PEM device
-    certificate from Apple to activate with (see activation.py)."""
+    certificate from Apple to activate with (see activation.py). name and settings: see bundle.py."""
     device = identity.generate()
-    bundle = Bundle.create(bundle_path, ipsw, device)
+    bundle = Bundle.create(bundle_path, ipsw, device, name=name, settings=settings)
     if device_certificate:
         # run keeps the device's clock within the certificate's validity
         bundle.info["device_certificate"] = {
