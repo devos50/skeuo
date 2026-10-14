@@ -45,7 +45,19 @@
     try {
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
       onstatus(await invoke("import_bootrom", { bytes }));
-      notice = "The bootrom was replaced.";
+      notice = "Devices now start from this boot ROM.";
+    } catch (e) {
+      error = String(e);
+    } finally {
+      bootromInput.value = "";
+    }
+  }
+
+  async function removeBootrom() {
+    error = null;
+    try {
+      onstatus(await invoke("remove_bootrom"));
+      notice = "Devices now start their firmware directly.";
     } catch (e) {
       error = String(e);
     }
@@ -93,11 +105,17 @@
     </section>
 
     <section>
-      <h3>Boot ROM</h3>
-      <p class="muted">The S5L8720 SecureROM (iBoot-240.4) that every device starts from.</p>
+      <h3>Boot ROM <span class="muted small">(optional)</span></h3>
+      <p class="muted">
+        Devices start their firmware directly. If you have a copy of the S5L8720 SecureROM (iBoot-240.4), they can start
+        from it instead, like the real device. It takes effect the next time a device boots.
+      </p>
       <div class="row">
-        <span class="ok">{status.bootrom ? "Installed" : "Missing"}</span>
-        <button onclick={() => bootromInput.click()}>Replace…</button>
+        <span class="ok" class:muted={!status.bootrom}>{status.bootrom ? "Devices start from your boot ROM" : "Not used"}</span>
+        <button onclick={() => bootromInput.click()} disabled={running} title={running ? "Stop the running device first" : ""}>{status.bootrom ? "Replace…" : "Choose…"}</button>
+        {#if status.bootrom}
+          <button onclick={removeBootrom} disabled={running} title={running ? "Stop the running device first" : ""}>Remove</button>
+        {/if}
         <input bind:this={bootromInput} type="file" hidden onchange={(e) => replaceBootrom(e.target.files[0])} />
       </div>
     </section>

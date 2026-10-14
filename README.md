@@ -31,4 +31,5 @@ There is no app yet.
 ## Firmware
 
 Skeuo ships no Apple code. Users supply their own IPSW, which the app can fetch straight from
-Apple's servers.
+Apple's servers. Nothing else is needed: the emulator starts the firmware itself, without the
+device's bootrom (a dump of it is optional, for comparing with the real boot path).

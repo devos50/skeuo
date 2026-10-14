@@ -1,5 +1,5 @@
-// Skeuo's Rust core: runs the pipeline daemon, keeps the app's settings and the bootrom, and opens a window per
-// running device. The pipeline owns the device bundles; the UI asks it for everything through `rpc`.
+// Skeuo's Rust core: runs the pipeline daemon, keeps the app's settings and the optional bootrom, and opens a window
+// per running device. The pipeline owns the device bundles; the UI asks it for everything through `rpc`.
 
 mod daemon;
 
@@ -14,7 +14,8 @@ use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilde
 
 use daemon::{Daemon, RpcError};
 
-/// The S5L8720 SecureROM (iBoot-240.4) that the emulator runs. Apple's code, so the user supplies it.
+/// The S5L8720 SecureROM (iBoot-240.4). The emulator doesn't need it (it starts the firmware itself), but a user who
+/// has a copy can boot through it instead, to compare with the real thing. Apple's code, so never shipped.
 const BOOTROM_SHA256: &str = "55f4d8ea2791ba51dd89934168f38f0fb21ce8762ff614c1e742407c0d3ca054";
 const BOOTROM_SIZE: usize = 65536;
 
@@ -59,18 +60,20 @@ fn device_label(id: &str) -> String {
 
 fn start_daemon(app: &AppHandle) {
     let state = app.state::<App>();
-    if state.daemon.lock().unwrap().is_some() || !state.bootrom().exists() {
+    if state.daemon.lock().unwrap().is_some() {
         return;
     }
     let settings = state.settings.lock().unwrap().clone();
-    let args = vec![
+    let mut args = vec![
         "--library".into(),
         settings.library.to_string_lossy().into_owned(),
-        "--bootrom".into(),
-        state.bootrom().to_string_lossy().into_owned(),
         "--ipsw-cache".into(),
         state.data.join("ipsw").to_string_lossy().into_owned(),
     ];
+    if state.bootrom().exists() {
+        args.push("--bootrom".into());
+        args.push(state.bootrom().to_string_lossy().into_owned());
+    }
     let python = std::env::var("SKEUO_PYTHON").unwrap_or_else(|_| "python3".into());
     let result = Daemon::start(app.clone(), &python, &pipeline_dir(), &args, on_daemon_event);
     match result {
@@ -115,15 +118,46 @@ fn status(state: State<App>) -> Status {
     }
 }
 
-/// Checks the bootrom the user picked and keeps a copy in the app's data directory.
+/// Restarts the daemon, which takes the library and the bootrom when it starts. Refused while a device runs, since
+/// restarting the daemon would suspend it.
+async fn restart_daemon(app: &AppHandle, state: &State<'_, App>, change: impl FnOnce() -> Result<(), String>)
+    -> Result<(), String> {
+    if let Ok(daemon) = state.daemon() {
+        let list = daemon.call("list", json!({})).await.map_err(|e| e.message)?;
+        if !list["running"].is_null() {
+            return Err("A device is running. Suspend or power it off first.".into());
+        }
+    }
+    change()?;
+    let old = state.daemon.lock().unwrap().take();
+    if let Some(old) = old {
+        tauri::async_runtime::spawn_blocking(move || old.shutdown()).await.map_err(|e| e.to_string())?;
+    }
+    start_daemon(app);
+    Ok(())
+}
+
+/// Checks the bootrom the user picked and keeps a copy in the app's data directory; devices boot through it from now
+/// on.
 #[tauri::command]
-fn import_bootrom(app: AppHandle, state: State<App>, bytes: Vec<u8>) -> Result<Status, String> {
-    store_bootrom(&state, &bytes)?;
-    start_daemon(&app);
+async fn import_bootrom(app: AppHandle, state: State<'_, App>, bytes: Vec<u8>) -> Result<Status, String> {
+    check_bootrom(&bytes)?;
+    restart_daemon(&app, &state, || store_bootrom(&state, &bytes)).await?;
     Ok(status(state))
 }
 
-fn store_bootrom(state: &App, bytes: &[u8]) -> Result<(), String> {
+/// Removes the bootrom: devices start their firmware directly again.
+#[tauri::command]
+async fn remove_bootrom(app: AppHandle, state: State<'_, App>) -> Result<Status, String> {
+    restart_daemon(&app, &state, || match std::fs::remove_file(state.bootrom()) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    })
+    .await?;
+    Ok(status(state))
+}
+
+fn check_bootrom(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() != BOOTROM_SIZE {
         return Err(format!(
             "This file is {} bytes; the S5L8720 bootrom is {BOOTROM_SIZE} bytes.",
@@ -132,53 +166,34 @@ fn store_bootrom(state: &App, bytes: &[u8]) -> Result<(), String> {
     }
     let digest: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
     if digest != BOOTROM_SHA256 {
-        return Err("This isn't the S5L8720 bootrom Skeuo needs (SecureROM iBoot-240.4): its SHA-256 differs.".into());
+        return Err("This isn't the S5L8720 bootrom (SecureROM iBoot-240.4): its SHA-256 differs.".into());
     }
+    Ok(())
+}
+
+fn store_bootrom(state: &App, bytes: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(&state.data).map_err(|e| e.to_string())?;
     let part = state.bootrom().with_extension("part");
     std::fs::write(&part, bytes).and_then(|_| std::fs::rename(&part, state.bootrom())).map_err(|e| e.to_string())
 }
 
-/// Without a bootrom yet, takes the one $SKEUO_BOOTROM names (as the pipeline does), so development skips the
-/// first-run step. The same check applies; a wrong file leaves the first-run step to ask.
-fn bootrom_from_environment(state: &App) {
-    if state.bootrom().exists() {
-        return;
-    }
-    if let Some(path) = std::env::var_os("SKEUO_BOOTROM") {
-        let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| store_bootrom(state, &bytes));
-        if let Err(e) = result {
-            eprintln!("skeuo: not using SKEUO_BOOTROM ({}): {e}", PathBuf::from(path).display());
-        }
-    }
-}
-
-/// Moves Skeuo to another library directory: saves the setting and restarts the daemon on it. Refused while a
-/// device runs, since restarting the daemon would suspend it.
+/// Moves Skeuo to another library directory: saves the setting and restarts the daemon on it.
 #[tauri::command]
 async fn set_library(app: AppHandle, state: State<'_, App>, path: PathBuf) -> Result<Status, String> {
     if !path.is_dir() {
         return Err(format!("{} is not a folder", path.display()));
     }
-    if let Ok(daemon) = state.daemon() {
-        let list = daemon.call("list", json!({})).await.map_err(|e| e.message)?;
-        if !list["running"].is_null() {
-            return Err("A device is running. Suspend or power it off first.".into());
-        }
-    }
-    let settings = {
-        let mut settings = state.settings.lock().unwrap();
-        settings.library = path;
-        settings.clone()
-    };
-    std::fs::create_dir_all(&state.data).map_err(|e| e.to_string())?;
-    std::fs::write(state.data.join("settings.json"), serde_json::to_vec_pretty(&settings).unwrap())
-        .map_err(|e| e.to_string())?;
-    let old = state.daemon.lock().unwrap().take();
-    if let Some(old) = old {
-        tauri::async_runtime::spawn_blocking(move || old.shutdown()).await.map_err(|e| e.to_string())?;
-    }
-    start_daemon(&app);
+    restart_daemon(&app, &state, || {
+        let settings = {
+            let mut settings = state.settings.lock().unwrap();
+            settings.library = path;
+            settings.clone()
+        };
+        std::fs::create_dir_all(&state.data).map_err(|e| e.to_string())?;
+        std::fs::write(state.data.join("settings.json"), serde_json::to_vec_pretty(&settings).unwrap())
+            .map_err(|e| e.to_string())
+    })
+    .await?;
     Ok(status(state))
 }
 
@@ -348,13 +363,13 @@ pub fn run() {
                 daemon: Mutex::new(None),
                 daemon_error: Mutex::new(None),
             });
-            bootrom_from_environment(&app.state::<App>());
             start_daemon(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             status,
             import_bootrom,
+            remove_bootrom,
             rpc,
             start_device,
             restart_device,

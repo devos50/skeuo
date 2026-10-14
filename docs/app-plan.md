@@ -1,9 +1,9 @@
 # Skeuo app: plan
 
 Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API), 2 (display/input spike) and
-3 (app skeleton, Svelte) 4 (create flow), 5 (device window) and 6 (edit, settings) done on 2026-10-14. Packaging (roadmap step 5) is postponed
-(Martijn, 2026-10-14): first, booting without the bootrom (docs/bootrom-free-kickoff-prompt.md), which removes the
-app's first-run bootrom step. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+3 (app skeleton, Svelte) 4 (create flow), 5 (device window) and 6 (edit, settings) done on 2026-10-14. Booting without the bootrom
+(docs/bootrom-free-kickoff-prompt.md) done on 2026-10-14: the first-run bootrom step is gone. Next: packaging (roadmap
+step 5). Roadmap step 4 (app shell), after IPSW → bundle automation (done)
 and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
@@ -74,12 +74,12 @@ Bundles stay where they are (default library `~/Skeuo`, configurable). New in `d
 - `thumbnail.png` in the bundle: the last lit frame the app showed (taken from the client, because the screen
   may be asleep at suspend time). If there is none yet, use the firmware's default lock screen artwork, which we draw ourselves.
 
-The app's own settings (library path, bootrom location, IPSW cache) live in the platform's config directory.
+The app's own settings (library path, the optional bootrom, IPSW cache) live in the platform's config directory.
 
 ## Screens
 
-1. **First run:** pick the S5L8720 bootrom (it can't be shipped; check its SHA-256 and copy it to the app's data
-   directory).
+1. **First run:** none since 2026-10-14. It used to ask for the S5L8720 bootrom, which the emulator no longer needs
+   (see "Booting without the bootrom" below); a bootrom is optional, in Settings.
 2. **Gallery:** a grid of cards with the thumbnail, name, iOS version and a state badge (running / suspended / off).
    Double-click to start or resume (only one at a time: while one runs, the others can't start); a context menu with Edit, Power off, Show in Finder and Remove. A "+" card creates a new one.
 3. **New emulator dialog:**
@@ -89,7 +89,7 @@ The app's own settings (library path, bootrom location, IPSW cache) live in the 
    - Activation: Skeuo's own (default) or an Apple device certificate (`--device-certificate`).
    - Advanced (collapsed): Wi-Fi on/off, audio on/off, libimobiledevice access on/off, NOR images override.
    - The restore runs in the background with a progress bar (the restore steps are already logged:
-     DFU → iBEC → ramdisk → asr → NOR → prepare), and the card appears straight away with a "creating" state.
+     iBSS → iBEC → ramdisk → asr → NOR → prepare), and the card appears straight away with a "creating" state.
 4. **Device window:** the screen in a simple drawn device frame (our own artwork, not Apple's), resizable and
    scalable 1×/2×. A toolbar or side buttons for home, power, volume, rotate and screenshot. Status: running,
    "connected to libimobiledevice", and a suspend indicator. Closing the window suspends (as `run` does now);
@@ -154,6 +154,18 @@ notarization, and Windows/Linux builds.
 - Closing a device window sends the last lit frame as the thumbnail, then suspends. Quitting the app closes the
   daemon's stdin, which suspends the running device.
 - Not yet: the "+" card and create dialog (milestone 4), Edit/Remove (6), a drawn device frame and scaling presets (5).
+
+## Booting without the bootrom (2026-10-14)
+
+- The bootrom's only job for us was loading the first stage: LLB from the NOR (normal boot) or iBSS over DFU
+  (restore), decrypted with the GID-unwrapped KBAG key, at 0x22000000, entered with r0 = 0 and the MMU off. Nothing
+  later calls into the ROM or reads it (tested by wiping it at LLB's entry). The emulator now does this itself at every
+  reset (qemu-ios d7729e5337): `bootrom=` is optional, `boot-image=` starts an IMG3 such as iBSS instead of LLB, and
+  `dfu=on` still needs the bootrom.
+- The pipeline restores by passing the IPSW's iBSS as the boot image (no DFU); `--bootrom` still goes through DFU.
+  The bootrom isn't part of a saved state's fingerprint, so a state resumes with or without it.
+- The app has no first-run step. Settings has an optional boot ROM (Choose…/Replace…/Remove, restarting the daemon);
+  with one, devices boot through it. `SKEUO_BOOTROM` is no longer imported by the app.
 
 ## Open questions
 

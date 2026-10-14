@@ -1,6 +1,5 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
-  import FirstRun from "./FirstRun.svelte";
   import Gallery from "./Gallery.svelte";
 
   let status = $state(null);
@@ -13,8 +12,6 @@
 
 {#if !status}
   <!-- loading -->
-{:else if !status.bootrom}
-  <FirstRun onimported={(s) => (status = s)} />
 {:else if !status.daemon}
   <div class="problem">
     <h1>Skeuo can't start</h1>
