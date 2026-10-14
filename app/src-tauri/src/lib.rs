@@ -179,11 +179,31 @@ fn open_device_window(app: &AppHandle, id: &str, run: &Value) -> Result<(), RpcE
         .join("&");
     WebviewWindowBuilder::new(app, device_label(id), WebviewUrl::App(format!("index.html?{query}").into()))
         .title("Skeuo")
-        .inner_size(380.0, 640.0)
-        .min_inner_size(300.0, 480.0)
+        // the device frame at 1x plus the toolbar (DeviceWindow.svelte)
+        .inner_size(404.0, 744.0)
+        .min_inner_size(220.0, 260.0)
         .build()
         .map_err(|e| RpcError::new("window", e.to_string()))?;
     Ok(())
+}
+
+/// Undoes encodeURIComponent.
+fn decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn encode(s: &str) -> String {
@@ -193,6 +213,36 @@ fn encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// Powers a running device off and boots it again, in a new window.
+#[tauri::command]
+async fn restart_device(app: AppHandle, state: State<'_, App>, id: String) -> Result<(), RpcError> {
+    let daemon = state.daemon()?;
+    daemon.call("power_off", json!({"device": id})).await?;
+    let result = daemon.call("run", json!({"device": id})).await?;
+    open_device_window(&app, &id, &result)
+}
+
+/// Saves a screenshot to the Desktop: the PNG is the request body, the file name (without .png, percent-encoded)
+/// the x-name header. Returns the path.
+#[tauri::command]
+fn save_screenshot(app: AppHandle, request: tauri::ipc::Request) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(png) = request.body() else {
+        return Err("expected the PNG as the request body".into());
+    };
+    let name = request.headers().get("x-name").and_then(|v| v.to_str().ok()).map(decode).unwrap_or_default();
+    let name = if name.is_empty() { "Skeuo Screenshot".to_string() } else { name };
+    let name: String = name.chars().map(|c| if "/\\:".contains(c) { '-' } else { c }).collect();
+    let desktop = app.path().desktop_dir().map_err(|e| e.to_string())?;
+    let mut path = desktop.join(format!("{name}.png"));
+    let mut n = 2;
+    while path.exists() {
+        path = desktop.join(format!("{name} {n}.png"));
+        n += 1;
+    }
+    std::fs::write(&path, png).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// The device's thumbnail.png, or nothing.
@@ -270,7 +320,17 @@ pub fn run() {
             start_daemon(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, import_bootrom, rpc, start_device, thumbnail, reveal, pick_path])
+        .invoke_handler(tauri::generate_handler![
+            status,
+            import_bootrom,
+            rpc,
+            start_device,
+            restart_device,
+            thumbnail,
+            reveal,
+            pick_path,
+            save_screenshot
+        ])
         .build(tauri::generate_context!())
         .expect("could not start Skeuo")
         .run(|app, event| {

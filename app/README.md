@@ -13,7 +13,7 @@ Development needs Node and current Rust (Tauri 2.12 needs Rust 1.90 or later). T
 from `../pipeline`; set `SKEUO_PYTHON` or `SKEUO_PIPELINE` to use others. QEMU is found as the pipeline finds it
 (`SKEUO_QEMU`, or the emulator submodule's build directory).
 
-## What it does so far (milestones 3 and 4)
+## What it does so far (milestones 3 to 5)
 
 - **First run:** asks for the S5L8720 bootrom (SecureROM iBoot-240.4, 64 KB), checks its SHA-256 and keeps a copy
   as `bootrom.bin` in `~/Library/Application Support/Skeuo` (the platform's data directory). The pipeline's IPSW
@@ -29,17 +29,25 @@ from `../pipeline`; set `SKEUO_PYTHON` or `SKEUO_PIPELINE` to use others. QEMU i
   Wi-Fi, audio, libimobiledevice access and a NOR images folder. The card appears at once and shows the download
   and restore progress; Cancel Download in its menu stops a download (the restore can't be stopped). A restore
   that fails leaves an "Incomplete" card with its logs, which Move to Trash removes.
-- **Device window:** the screen, scaled to the window; touch with the mouse; Home, Sleep/Wake, Volume and Rotate as
-  toolbar buttons and on the keys H, P, -, = and R. Every 10 s, and when the window closes, the last frame with the
-  screen lit becomes the gallery thumbnail. Closing the window suspends the device. Quitting Skeuo suspends the
-  running device too (the daemon does that when its stdin closes).
+- **Device window:** the screen in a device frame we draw ourselves (`DeviceFrame.svelte`), whose home, sleep and
+  volume buttons work. Fit to the window, or 1× (320 points wide) and 2×, which size the window to the device.
+  Rotate left/right turns the whole device and tells the emulator's accelerometer (the daemon's `orientation`
+  request), so apps that rotate follow; touch is mapped back through the rotation, and the window turns with it.
+  Screenshots (as the screen is seen, rotated) go to the Desktop. The ⋯ menu has Take Screenshot, Restart and Power
+  Off. A USB indicator shows while libimobiledevice sees the device. Every 5 s, and when the window closes, the last
+  frame with the screen lit becomes the gallery thumbnail. Closing the window suspends the device. Quitting Skeuo
+  suspends the running device too (the daemon does that when its stdin closes).
+- **Shortcuts** (as in Apple's Simulator): ⇧⌘H Home, ⌘L Sleep/Wake, ⌘↑/⌘↓ Volume, ⌘←/⌘→ Rotate, ⌘S Screenshot,
+  ⌘1/⌘2/⌘3 Actual size/Double size/Fit. H, P, - and = hold Home, Sleep/Wake and Volume for as long as they are down
+  (hold P for "slide to power off").
 
 ## Layout
 
 - `src-tauri/src/lib.rs`: the commands the UI calls (`status`, `import_bootrom`, `rpc`, `start_device`,
-  `thumbnail`, `reveal`, `pick_path`: native file dialogs, since the pipeline needs paths), the device windows (closed when their device stops), and shutting the daemon down on exit.
+  `restart_device`, `thumbnail`, `reveal`, `pick_path`: native file dialogs, since the pipeline needs paths,
+  `save_screenshot`), the device windows (closed when their device stops), and shutting the daemon down on exit.
 - `src-tauri/src/daemon.rs`: the daemon process: requests by id, events forwarded to every window as `daemon`.
 - `src/lib/daemon.svelte.js`: the device list as reactive state, kept current from the daemon's events.
 - `src/lib/rfb.js`: the RFB client from the spike (`spike/`).
-- `src/Gallery.svelte`, `DeviceCard.svelte`, `CreateDialog.svelte`, `DeviceWindow.svelte`, `FirstRun.svelte`, `Menu.svelte`,
+- `src/Gallery.svelte`, `DeviceCard.svelte`, `CreateDialog.svelte`, `DeviceFrame.svelte`, `DeviceWindow.svelte`, `FirstRun.svelte`, `Menu.svelte`,
   `Confirm.svelte`.

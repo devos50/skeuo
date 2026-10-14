@@ -1,7 +1,7 @@
 # Skeuo app: plan
 
 Status: planned (2026-10-13), decisions taken 2026-10-14. Milestones 1 (pipeline API), 2 (display/input spike) and
-3 (app skeleton, Svelte) and 4 (create flow) done on 2026-10-14; milestone 5 (device window polish) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
+3 (app skeleton, Svelte) 4 (create flow) and 5 (device window) done on 2026-10-14; milestone 6 (edit, settings) is next. Roadmap step 4 (app shell), after IPSW → bundle automation (done)
 and suspend/resume (done). Packaging/CI (step 5) gets its own plan once the toolkit is settled.
 
 ## Vision (from Martijn, 2026-10-13)
@@ -114,7 +114,8 @@ The app's own settings (library path, bootrom location, IPSW cache) live in the 
    iPod touch 2G for now, `DEVICE_TYPES` in ipsw.py and the daemon's `device_types` request). Move to Trash came
    along from milestone 6, for incomplete devices.*
 5. **Device window polish.** Frame, scaling, rotation (rotate the frame along with the accelerometer), shortcuts,
-   screenshots, live thumbnails.
+   screenshots, live thumbnails. *Done 2026-10-14. The emulator's accelerometer got an `orientation` property
+   (qemu-ios b7db9dbad6) that the app sets and reads back after a resume; the frame is CSS, generic.*
 6. **Edit/remove**, settings.
 
 Then packaging: bundle QEMU and its dylibs (glib, pixman, SDL can go, slirp, libpng), Python, code signing and
