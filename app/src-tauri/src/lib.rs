@@ -46,11 +46,38 @@ impl App {
     }
 }
 
-/// The pipeline directory: $SKEUO_PIPELINE, or the repository's pipeline/ next to app/ (development).
-fn pipeline_dir() -> PathBuf {
-    std::env::var_os("SKEUO_PIPELINE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pipeline"))
+/// What the daemon runs with: a Python, the pipeline directory and, unless the pipeline should find it itself, QEMU.
+struct Runtime {
+    python: PathBuf,
+    pipeline: PathBuf,
+    qemu: Option<PathBuf>,
+}
+
+/// $SKEUO_PYTHON, $SKEUO_PIPELINE and $SKEUO_QEMU override each part. Otherwise a bundled app takes them from its
+/// resources (python/, pipeline/, qemu/; see packaging/macos), and a debug build (`npm run tauri dev`) uses python3
+/// on the PATH and the repository's pipeline/, which finds QEMU itself (SKEUO_QEMU or the emulator submodule).
+fn runtime(app: &AppHandle) -> Result<Runtime, String> {
+    let env = |name| std::env::var_os(name).map(PathBuf::from);
+    #[cfg(debug_assertions)]
+    let (python, pipeline, qemu) = {
+        let _ = app;
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        (PathBuf::from("python3"), repo.join("pipeline"), None)
+    };
+    #[cfg(not(debug_assertions))]
+    let (python, pipeline, qemu) = {
+        let resources = app.path().resource_dir().map_err(|e| format!("no resource directory: {e}"))?;
+        (
+            resources.join("python/bin/python3"),
+            resources.join("pipeline"),
+            Some(resources.join("qemu/qemu-system-arm")),
+        )
+    };
+    Ok(Runtime {
+        python: env("SKEUO_PYTHON").unwrap_or(python),
+        pipeline: env("SKEUO_PIPELINE").unwrap_or(pipeline),
+        qemu: env("SKEUO_QEMU").or(qemu),
+    })
 }
 
 /// A window label for a device; labels only allow a few characters, and device ids can contain dots.
@@ -74,8 +101,13 @@ fn start_daemon(app: &AppHandle) {
         args.push("--bootrom".into());
         args.push(state.bootrom().to_string_lossy().into_owned());
     }
-    let python = std::env::var("SKEUO_PYTHON").unwrap_or_else(|_| "python3".into());
-    let result = Daemon::start(app.clone(), &python, &pipeline_dir(), &args, on_daemon_event);
+    let result = runtime(app).and_then(|runtime| {
+        if let Some(qemu) = &runtime.qemu {
+            args.push("--qemu".into());
+            args.push(qemu.to_string_lossy().into_owned());
+        }
+        Daemon::start(app.clone(), &runtime.python, &runtime.pipeline, &args, on_daemon_event).map_err(|e| e.to_string())
+    });
     match result {
         Ok(daemon) => {
             *state.daemon.lock().unwrap() = Some(daemon);

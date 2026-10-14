@@ -41,7 +41,7 @@ impl Daemon {
     /// Starts the daemon. python: the interpreter; pipeline: the directory with the skeuo package.
     pub fn start(
         app: AppHandle,
-        python: &str,
+        python: &Path,
         pipeline: &Path,
         args: &[String],
         on_event: impl Fn(&AppHandle, &Value) + Send + 'static,
@@ -50,6 +50,11 @@ impl Daemon {
             .args(["-m", "skeuo", "serve"])
             .args(args)
             .current_dir(pipeline)
+            // the user's own Python setup stays out, and nothing writes bytecode into a (signed) app bundle
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env("PYTHONNOUSERSITE", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
