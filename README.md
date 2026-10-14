@@ -33,3 +33,9 @@ There is no app yet.
 Skeuo ships no Apple code. Users supply their own IPSW, which the app can fetch straight from
 Apple's servers. Nothing else is needed: the emulator starts the firmware itself, without the
 device's bootrom (a dump of it is optional, for comparing with the real boot path).
+
+## License
+
+Skeuo (the app and the pipeline) is free software under the GNU General Public License, version 3 or (at your
+option) any later version; see [LICENSE](LICENSE). The emulator in `emulator/` is QEMU and keeps QEMU's license,
+GPL version 2. Skeuo runs it as a separate program.
