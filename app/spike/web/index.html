@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skeuo display spike</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f2f2f4; --fg: #1c1c1e; --muted: #6e6e73; --panel: #fff; --line: #d1d1d6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1c1e; --fg: #f2f2f7; --muted: #98989d; --panel: #2c2c2e; --line: #3a3a3c; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px -apple-system, system-ui, sans-serif; }
+  main { display: flex; gap: 24px; padding: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .device { background: #111; padding: 18px 14px 56px; border-radius: 36px; position: relative; }
+  canvas { display: block; background: #000; image-rendering: pixelated; touch-action: none; cursor: crosshair; }
+  .home { position: absolute; left: 50%; bottom: 12px; width: 34px; height: 34px; margin-left: -17px; border-radius: 50%;
+          border: 2px solid #444; background: #1a1a1a; cursor: pointer; }
+  .home:active { background: #333; }
+  aside { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 260px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; }
+  h2:first-child { margin-top: 0; }
+  button { font: inherit; padding: 5px 10px; margin: 0 4px 6px 0; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--fg); cursor: pointer; }
+  button:active { filter: brightness(0.9); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+  #status.err { color: #d70015; }
+</style>
+</head>
+<body>
+<main>
+  <div class="device">
+    <canvas id="screen" width="320" height="480"></canvas>
+    <div class="home" data-key="home" title="Home (H)"></div>
+  </div>
+  <aside>
+    <h2>Connection</h2>
+    <div id="status">connecting…</div>
+    <h2>Buttons</h2>
+    <div>
+      <button data-key="home">Home <kbd>H</kbd></button>
+      <button data-key="power">Power <kbd>P</kbd></button><br>
+      <button data-key="volup">Volume + <kbd>=</kbd></button>
+      <button data-key="voldown">Volume − <kbd>-</kbd></button><br>
+      <button data-key="rotate">Rotate <kbd>R</kbd></button>
+      <button data-key="mute">Mute <kbd>M</kbd></button>
+    </div>
+    <h2>Scale</h2>
+    <div><button data-scale="1">1×</button><button data-scale="1.5">1.5×</button><button data-scale="2">2×</button></div>
+    <h2>Measurements</h2>
+    <dl>
+      <dt>Updates/s</dt><dd id="fps">–</dd>
+      <dt>Received</dt><dd id="rate">–</dd>
+      <dt>Update latency</dt><dd id="lat">–</dd>
+      <dt>Touch → frame</dt><dd id="touchlat">–</dd>
+      <dt>Last touch</dt><dd id="touch">–</dd>
+    </dl>
+  </aside>
+</main>
+<script type="module">
+import { RFB } from "./rfb.js";
+
+// the device's buttons: X keysym and PC scancode of the key the emulator maps to them (ipod_touch_2g.c)
+const KEYS = {
+  home:    { keysym: 0x68, scancode: 0x23, code: "KeyH" },
+  power:   { keysym: 0x70, scancode: 0x19, code: "KeyP" },
+  volup:   { keysym: 0x3d, scancode: 0x0d, code: "Equal" },
+  voldown: { keysym: 0x2d, scancode: 0x0c, code: "Minus" },
+  rotate:  { keysym: 0x72, scancode: 0x13, code: "KeyR" },
+  mute:    { keysym: 0x6d, scancode: 0x32, code: "KeyM" },
+};
+// matched on the physical key (KeyboardEvent.code), whatever the keyboard layout
+const BY_CODE = Object.fromEntries(Object.entries(KEYS).map(([name, k]) => [k.code, name]));
+BY_CODE.NumpadAdd = "volup";
+BY_CODE.NumpadSubtract = "voldown";
+
+const params = new URLSearchParams(location.search);
+const url = params.get("url") || "ws://127.0.0.1:" + (params.get("ws") || window.SKEUO_WS);
+const canvas = document.getElementById("screen");
+const status = document.getElementById("status");
+const rfb = new RFB(url, canvas);
+let scale = Number(localStorage.getItem("scale") || 1);
+
+function applyScale() {
+  canvas.style.width = rfb.width * scale + "px";
+  canvas.style.height = rfb.height * scale + "px";
+}
+rfb.addEventListener("connect", (e) => {
+  status.textContent = `${e.detail.name}, ${e.detail.width}×${e.detail.height}, ${url}`;
+});
+rfb.addEventListener("resize", applyScale);
+rfb.addEventListener("disconnect", () => { status.textContent = "disconnected"; status.className = "err"; });
+rfb.addEventListener("error", (e) => { status.textContent = e.detail; status.className = "err"; });
+
+for (const b of document.querySelectorAll("[data-scale]")) {
+  b.onclick = () => { scale = Number(b.dataset.scale); localStorage.setItem("scale", scale); applyScale(); };
+}
+
+// buttons are held as long as the mouse is down (hold Power to get "slide to power off"), and at least MIN_PRESS:
+// iOS reads the button GPIOs on an interrupt, and a press that is released at once can be over before it looks
+const MIN_PRESS = 100;
+const pressedAt = {};
+function press(name, down) {
+  const k = KEYS[name];
+  if (down) {
+    pressedAt[name] = performance.now();
+    rfb.key(k.keysym, k.scancode, true);
+  } else {
+    const wait = MIN_PRESS - (performance.now() - (pressedAt[name] || 0));
+    setTimeout(() => rfb.key(k.keysym, k.scancode, false), Math.max(0, wait));
+  }
+}
+window.rfb = rfb; // for poking at it from the console
+for (const el of document.querySelectorAll("[data-key]")) {
+  el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); press(el.dataset.key, true); });
+  el.addEventListener("pointerup", () => press(el.dataset.key, false));
+  el.addEventListener("pointercancel", () => press(el.dataset.key, false));
+}
+const held = new Set();
+addEventListener("keydown", (e) => {
+  const name = BY_CODE[e.code];
+  if (!name || e.metaKey || e.ctrlKey) return;
+  e.preventDefault();
+  if (held.has(name)) return; // no auto-repeat
+  held.add(name);
+  press(name, true);
+});
+addEventListener("keyup", (e) => {
+  const name = BY_CODE[e.code];
+  if (name && held.delete(name)) press(name, false);
+});
+
+// touch: the canvas in framebuffer pixels
+let touchStart = 0;
+function at(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * rfb.width / r.width, (e.clientY - r.top) * rfb.height / r.height];
+}
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  const [x, y] = at(e);
+  rfb.pointer(x, y, 1);
+  touchStart = performance.now();
+  document.getElementById("touch").textContent = `${Math.round(x)}, ${Math.round(y)}`;
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (rfb.buttons) rfb.pointer(...at(e), 1);
+});
+canvas.addEventListener("pointerup", (e) => rfb.pointer(...at(e), 0));
+canvas.addEventListener("pointercancel", (e) => rfb.pointer(...at(e), 0));
+
+rfb.addEventListener("update", () => {
+  if (touchStart) {
+    document.getElementById("touchlat").textContent = (performance.now() - touchStart).toFixed(0) + " ms";
+    touchStart = 0;
+  }
+});
+let last = { t: performance.now(), updates: 0, bytes: 0 };
+setInterval(() => {
+  const now = performance.now(), s = rfb.stats, dt = (now - last.t) / 1000;
+  document.getElementById("fps").textContent = ((s.updates - last.updates) / dt).toFixed(1);
+  document.getElementById("rate").textContent = ((s.bytes - last.bytes) / dt / 1024).toFixed(0) + " KB/s";
+  document.getElementById("lat").textContent = s.lastLatency.toFixed(1) + " ms";
+  last = { t: now, updates: s.updates, bytes: s.bytes };
+}, 1000);
+</script>
+</body>
+</html>
