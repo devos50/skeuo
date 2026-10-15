@@ -3,7 +3,8 @@
 # macOS (Homebrew's glib, pixman, libslirp, faad2, mpg123 and what they link) into <dir>/lib, and points every
 # reference at those copies (@loader_path/lib/... from the binary, @loader_path/... between the dylibs). Then checks
 # with otool -L that nothing points outside the bundle and the system, and signs everything ad hoc (rewriting install
-# names breaks the signatures, and arm64 runs nothing unsigned); sign.sh signs again for a release.
+# names breaks the signatures, and arm64 runs nothing unsigned); sign.sh signs again for a release. Also copies the
+# en-us keymap into <dir>/share/keymaps, where build-qemu.sh's QEMU looks for it: -vnc won't start without one.
 #
 #   packaging/macos/bundle-qemu.sh <qemu-system-arm> <dir>
 set -euo pipefail
@@ -14,10 +15,12 @@ if [ $# -ne 2 ]; then
 fi
 qemu=$1
 out=$2
+src=$(cd "$(dirname "$0")/../../emulator" && pwd)
 rm -rf "$out"
-mkdir -p "$out/lib"
+mkdir -p "$out/lib" "$out/share/keymaps"
 cp "$qemu" "$out/qemu-system-arm"
 chmod u+w "$out/qemu-system-arm"
+cp "$src/pc-bios/keymaps/en-us" "$out/share/keymaps/"
 
 # The non-system libraries a Mach-O file links, as paths on this Mac (@rpath and @loader_path resolved).
 dependencies() {
