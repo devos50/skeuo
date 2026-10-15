@@ -199,6 +199,13 @@ What LLB 1.1.5 (iBoot-204.3.16) needs from the NOR, so that Skeuo can write one 
   The image key comes from the emulator's UID key, so a NOR made this way only works in the emulator, which is fine.
 - Still to learn: where a real restore puts LLB (for now it is the first image, and the machine finds it by tag),
   and whether iBoot needs more (SysCfg at 0x4000 holds only a stub).
+- **NVRAM** (iBoot 1.1.5, FUN_18004b74 and FUN_18008576; the real dump has the same layout): two banks of 0x2000
+  bytes at the end of `nor0` (0xfc000 and 0xfe000), the bank with the higher epoch wins. A bank is CHRP NVRAM: a 0x5a
+  partition named "nvram" (header checksum at 1, length in 16-byte units at 2, name at 4) with the Adler-32 of 0x14
+  to the end of the bank at 0x10 and the epoch at 0x14, then partitions from 0x20 up to a 0x7f free partition. The
+  variables are in "common" (0x70, 0x800 bytes): "name=value" strings ending in a zero. `debug-uarts` is a mask of
+  the UARTs iBoot writes its console to (1 = UART0); `boot-args` goes to the kernel. `make_nor_1g.py` writes
+  `debug-uarts=1` and `boot-args=serial=1 debug=0x8 -v` (or its third argument).
 
 ### iBoot 1.1.5 and the bootrom (found 2026-10-15)
 
@@ -277,6 +284,39 @@ check: the generator wrote an MBR with a protective 0xEE entry and a GPT for 1.1
 (encrcdsa) DMG, VFDecrypt key c7973558e8f6af22e38d4573737d1533f1d5eec202bf86a32d941975d76f8906c7f0afe4 (from The
 iPhone Wiki), holding an Apple Partition Map with the HFSX volume ("LittleBear4B1.N45Bundle").
 
+### The 1.1.5 kernel (found 2026-10-15)
+
+The kernelcache (Darwin 9.0.0d1, xnu-933.0.0.211, RELEASE_ARM_S5L8900XRB) is an 8900 container (key 0x837)
+holding "complzss" (LZSS, 0x180-byte header); the kernel has symbols, the prelinked kexts don't (their personalities
+are in the prelink plist). With the NVRAM above it logs to UART0 and, with `-v`, to the screen. What it needed:
+
+- **The timer's interrupt status** (qemu-ios a4c5e8ee49): the S5L8900 has seven timers, so timer n's status is at
+  (6 - n) * 8, not (7 - n) * 8. The kernel's decrementer is timer 4 (6 MHz, routed to the FIQ), and its FIQ handler
+  acknowledges it with 0x30000 at 0xf8; iBoot's handler reads timer 4 at bit 16 too. With the S5L8720's layout the
+  FIQ never cleared (the old "spins around 0xc006152c"). `s5l.timer` has a `timers` property (7 on the 1G).
+- **The LCD controller** (df9e248aaa, `s5l8900.lcd`): iBoot fills the kernel's video boot arguments from the
+  window registers it set up (base at 0x78, width << 16 | height at 0x7c, format bits 8-10 at 0x74 for window 1;
+  windows of 0x18 bytes from 0x58). Reading 0 there left the kernel in PE_init_iokit, whose loop that centres the
+  boot logo against half the screen height doesn't end for a height of 0. The model keeps the registers and draws
+  the window (320x480, 32 or 16 bits per pixel). Window enable bits and the interrupt are unknown.
+- **The MBX** (619a7efe09, the 2G's `s5l.mbx`): AppleMBX's core reset ends with 0x80 in 0x85c and 0 in 0x81c and
+  then reads 0x12c until bit 8 (REGION_DONE), with no timeout. The model now raises it for 0x85c bit 7; the 2.1.1
+  kernel never writes 0x85c.
+
+The kernel then starts its IOKit drivers (VIC, edge IC, GPIO, power and clock controllers, DMACs, USB, ADM, MPVD,
+SPI, I2C, timer, watchdog, I2S, MBX, NOR access) and **panics in AppleS5L8900XUSBWrangler::phyRegistered**
+(0xc04c24e0, a null pointer). This is a race in Apple's driver, not a missing register: the wrangler's start
+(the call at 0xc04c2338) adds a publish notification for AppleS5L8900XUSBPhy and only stores the notifier (at +0x6c) when that
+call returns, and the handler removes the notifier first thing. If the PHY (`otgphyctrl`, which waits on nothing)
+is already published, the handler runs inside the call and the notifier is still null. Here the wrangler loses
+because it is asleep in IOFilterInterruptEventSource → lookUpInterruptController until the VIC registers itself as
+IOInterruptController00403C70, and the VIC only does that after IOCPUInterruptController::registerInterrupt
+returns, which waits for the CPU to enable its interrupts (AppleARMCPU::start: AppleARMFunction waits for the VIC
+and the power controller, then processor_start blocks to rebind to the boot processor before cpu_start). The order
+is the same with `-icount shift=1`. A real device must get AppleARMCPU through processor_start before the PHY is
+published; why it does isn't known yet (next to try: the order IOKit matches `cpus` and the `arm-io` children in,
+and how many config threads run at once).
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -316,6 +356,9 @@ iPhone Wiki), holding an Apple Partition Map with the HFSX volume ("LittleBear4B
    recovery mode. The NAND controller done (2026-10-15, 5fbb206159): iBoot finds the NAND and initialises its FTL,
    and stops because the NAND is empty. The NAND as a disk image done (2026-10-15, cb0998517f, read only): iBoot
    mounts 1.1.5's system volume, loads and decrypts the kernelcache and starts the kernel. See "The 1G's NAND".
+   The kernel on the serial log done (2026-10-15, a4c5e8ee49..619a7efe09): the NVRAM in the NOR, the timer's
+   interrupt layout, the LCD controller and the MBX. The kernel starts its IOKit drivers and panics in the USB
+   wrangler (a race, see "The 1.1.5 kernel").
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
    The presentation and the options are done (step 3); writes into the overlay and `nand.py` are left.
 5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.

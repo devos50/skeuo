@@ -38,7 +38,8 @@ registers), and the `iPod-Touch-1G` machine with `s5l8900.clock` and 2 MB of RAM
 (2ad617092f..efb02708ae) the GPIO's `fsel-offset`, the SPI's S5L8900 properties, and the 1G's SPI controllers and LCD
 panel, (4b79b3893f) `s5l8900.bootrom` in place of the bootrom, (5fbb206159) the NAND controller, its ECC
 engine and the DMA controllers, and (88a5b4ce76..cb0998517f) the NAND's contents from a disk image and the
-`nand-disk`/`nand-overlay` options (`nand-epoch` refused). The 2G still boots, suspends and resumes (checked on a clone of a 2.1.1 bundle). The
+`nand-disk`/`nand-overlay` options (`nand-epoch` refused). Then (a4c5e8ee49..619a7efe09) the timer's `timers` property (7 on the
+S5L8900), the LCD controller `s5l8900.lcd` and the 2G's `s5l.mbx` on the 1G (0x85c bit 7 raises REGION_DONE). The 2G still boots, suspends and resumes (checked on a clone of a 2.1.1 bundle). The
 NOR format LLB needs is in the plan ("The 1G's NOR").
 
 ## Where it stands
@@ -47,27 +48,36 @@ LLB runs from the NOR, checks and decrypts iBoot and starts it at 0x18000000. iB
 the display, calls the bootrom's USB setup (`s5l8900.bootrom` stands in), finds the NAND (`s5l8900.nand`: 8 banks,
 DMA, ECC), opens Whimory's VFL and FTL on a disk image presented in Whimory 2.1's legacy format (`nand-disk`,
 `nand-overlay`), mounts 1.1.5's system volume (MBR partition 1, 2048-byte LBAs), loads the kernelcache from it, has
-the bootrom stand-in decrypt its 8900 container and starts the kernel. The kernel runs (FIQ mode, around
-0xc006152c-0xc0061640 after 20 s) and prints nothing: no serial console yet. What the NAND holds and why is in the
-plan ("The 1G's NAND").
+the bootrom stand-in decrypt its 8900 container and starts the kernel. What the NAND holds and why is in the plan
+("The 1G's NAND").
 
-Next: the kernel on the serial log (boot-args such as `serial=1 debug=...` and debug-uarts need an NVRAM on the NOR;
-then whatever the kernel waits on). Later for the NAND: writes (the kernel drives the NAND through the ADM; the
-ipod_touch_1g branch has an HLE of it) into the overlay, folding the overlay in `nand.py`, and whether the 1.1.5
-kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1). Smaller things iBoot prints:
-"battery voltage error" (the PMU's ADC).
+Since 2026-10-15 (qemu-ios a4c5e8ee49..619a7efe09) the console works: `make_nor_1g.py` writes iBoot's NVRAM
+(`debug-uarts=1`, `boot-args=serial=1 debug=0x8 -v`; the format is in the plan's "The 1G's NOR"), so iBoot and the
+kernel print on UART0, and the verbose console also shows on the screen (`s5l8900.lcd`). The kernel needed the
+S5L8900's timer interrupt layout (seven timers), the LCD controller's window registers (iBoot passes them as the
+video boot arguments) and the MBX (`s5l.mbx`, whose reset the 1.1.5 driver waits on). It now starts its IOKit
+drivers and panics in AppleS5L8900XUSBWrangler::phyRegistered: a race between the USB wrangler and the USB PHY that
+the emulator loses because the wrangler waits for the VIC, which waits for AppleARMCPU (details and what to try in the
+plan's "The 1.1.5 kernel").
+
+Next: that race, then whatever the kernel waits on up to the NAND. Later for the NAND: writes (the kernel drives the
+NAND through the ADM; the ipod_touch_1g branch has an HLE of it) into the overlay, folding the overlay in `nand.py`,
+and whether the 1.1.5 kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1). Smaller
+things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 
 - Build: `packaging/macos/build-qemu.sh` (release build in `packaging/macos/build/qemu/`; `emulator/build` only holds
   a failed configure).
 - `pipeline/tools/1g/` (untracked):
-  - `make_nor_1g.py <extracted ipsw> <out>` builds a test NOR as a restore would leave it: CRCs, flags, the data
-    encrypted and both signatures with the emulator's UID key (needs `openssl`).
+  - `make_nor_1g.py <extracted ipsw> <out> [boot-args]` builds a test NOR as a restore would leave it: CRCs, flags,
+    the data encrypted and both signatures with the emulator's UID key (needs `openssl`), and an NVRAM that turns on
+    iBoot's console on UART0 and passes the boot-args (default `serial=1 debug=0x8 -v`).
   - `run1g.sh <nor> <seconds>` runs the machine headless and prints the serial output and a histogram of
     unimplemented accesses.
   - `iboot_console.sh <nor> <seconds>` prints iBoot's console messages (through lldb, breaking on its puts);
-    `NAND=nand-disk=<disk>,nand-overlay=<dir>` adds the NAND.
+    `NAND=nand-disk=<disk>,nand-overlay=<dir>` adds the NAND. With the NVRAM, `run1g.sh` shows the same on the
+    serial log.
   - `make_nand_disk_1g.py <extracted ipsw> <out> [data MB]` builds a NAND disk image from the 1.1.5 IPSW (needs
     `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume and an empty data
     volume, sparse.
@@ -76,6 +86,10 @@ kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1).
 - To try something in guest memory without a code change: `-device loader,file=<raw>,addr=<addr>,force-raw=on`
   (e.g. stubs at 0x20000000). `-monitor stdio` with `info registers` or `xp` piped in shows where a headless run is.
 - Tracing: `-d in_asm,int,unimp -D trace.log`; "Taking exception 4 [Data Abort]" lines carry the DFAR.
+- The kernelcache: decrypt the 8900 container (key 0x837) and decompress the "complzss" payload (LZSS from 0x180)
+  to get a Mach-O with the kernel's symbols (`nm`). The prelinked kexts (in __PRELINK, file offset 0x1f4000 at
+  0xc029b000) are stripped; their IOKit personalities are in the prelink plist. lldb breakpoint commands in Python
+  (`breakpoint command add -F`) work for following threads (r9 is the current thread).
 - **lldb** works as the debugger: start QEMU with `-gdb tcp::12345 -S`, then `lldb --arch armv6` and
   `gdb-remote 12345`. `-trace 'ipod_touch_aes*'` shows the AES registers; the monitor's `gva2gpa` the page table.
 - **Ghidra**: `/iPod Touch 1G/1.1.5/LLB.n45ap.1.1.5.bin` is the 1.1.5 LLB that runs (base 0x22000000), and

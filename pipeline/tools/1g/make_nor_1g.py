@@ -1,4 +1,5 @@
-"""Builds a test NOR for the iPod touch 1G from an extracted 1.1.x IPSW: python3 make_nor_1g.py <ipsw dir> <out>"""
+"""Builds a test NOR for the iPod touch 1G from an extracted 1.1.x IPSW:
+python3 make_nor_1g.py <ipsw dir> <out> [boot-args]"""
 import hashlib, os, struct, subprocess, sys, zlib
 
 KEY = "188458A6D15034DFE386F23B61D43774"
@@ -44,7 +45,31 @@ def install(img):
     struct.pack_into("<I", img, 0x64, zlib.crc32(bytes(img[:0x64])))
     img[0x3e0:0x400] = aes_encrypt(key, "0" * 32, hashlib.sha1(bytes(img[:0x3e0])).digest() + HEADER_PAD)
 
-def main(ipsw, out):
+# iBoot's NVRAM (FUN_18004b74, FUN_18008576 in iBoot 1.1.5): two banks of 0x2000 at the end of nor0, the one with
+# the highest epoch wins. A bank is CHRP NVRAM: a 0x5a "nvram" header with an Adler-32 of 0x14 to the end at 0x10 and
+# the epoch at 0x14, then partitions from 0x20 (signature, header checksum, length in 16 bytes, 12-byte name, data)
+# up to a 0x7f free partition. Partition "common" (0x70) holds the variables, "name=value" strings ending in a zero.
+NVRAM_BANK = 0x2000
+DEFAULT_BOOT_ARGS = "serial=1 debug=0x8 -v"
+
+def chrp(sig, name, data):
+    h = bytearray(struct.pack("<BBH12s", sig, 0, (0x10 + len(data) + 0xf) // 0x10, name))
+    c = h[0] + sum(h[2:0x10])
+    while c > 0xff:
+        c = (c >> 8) + (c & 0xff)
+    h[1] = c
+    return bytes(h) + data.ljust((len(data) + 0xf) & ~0xf, b"\0")
+
+def nvram(variables, epoch):
+    # debug-uarts is a mask of the UARTs iBoot writes its console to (bit 0, UART0); iBoot passes boot-args on.
+    common = b"".join(b"%s=%s\0" % (k.encode(), v.encode()) for k, v in variables)
+    parts = chrp(0x70, b"common", common.ljust(0x7f0, b"\0"))
+    bank = bytearray(chrp(0x5a, b"nvram", struct.pack("<II", 0, epoch).ljust(0x10, b"\0")) + parts)
+    bank += chrp(0x7f, b"w" * 12, b"\0" * (NVRAM_BANK - len(bank) - 0x10))
+    struct.pack_into("<I", bank, 0x10, zlib.adler32(bytes(bank[0x14:])))
+    return bytes(bank)
+
+def main(ipsw, out, boot_args=DEFAULT_BOOT_ARGS):
     fw = os.path.join(ipsw, "Firmware/all_flash/all_flash.n45ap.production")
     nor = bytearray(0x100000)
     cfg = struct.pack("<4sIIIII", b"gfCS", 200, 0x2000, 0x00010001, 0, 0)
@@ -66,7 +91,9 @@ def main(ipsw, out):
         nor[off:off + total] = bytes(img[:total]).ljust(total, b"\0")
         print("%s at 0x%x, 0x%x bytes" % (tag.decode(), off, total))
         off += total
-    assert off <= 0xfc000
+    assert off <= len(nor) - 2 * NVRAM_BANK
+    nor[len(nor) - 2 * NVRAM_BANK:len(nor) - NVRAM_BANK] = nvram([("debug-uarts", "1"), ("boot-args", boot_args)], 1)
+    nor[len(nor) - NVRAM_BANK:] = b"\xff" * NVRAM_BANK
     open(out, "wb").write(nor)
 
 main(*sys.argv[1:])
