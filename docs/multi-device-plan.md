@@ -213,9 +213,13 @@ relies on the bootrom, through a jump table at 0x20000000 that it calls directly
   0x18003814 and 0x180037a8 gate clock 0x2d first). These are the routines the ipod_touch_1g branch patched in the
   bootrom's pointer table (0x2000008c/0x20000090).
 
-Without a bootrom the machine has to stand in for these, as it already does for the bootrom's loading of LLB:
-Skeuo-written stubs or a device behind the table, not Apple code. With stubs that do nothing (and return 1 for
-0x2c/0x30, loaded by hand with `-device loader`), iBoot goes on to the NAND: it probes each chip enable (writes
+iBoot also copies the bootrom's 64 KB to 0x0fd00000 and checks its CRC against the bootroms it knows how to patch.
+
+The machine stands in for these with `s5l8900.bootrom` (decided 2026-10-15, like the ipod_touch_1g branch's
+patched routine table but without the bootrom): a jump table written in the emulator over the bootrom's 64 KB,
+each entry passing r0-r2 and its offset to the device. 0x2c checks the 8900 magic, 0x30 decrypts with key 0x837
+(no signature checks), the USB entries do nothing, others are logged with `-d unimp`. The decrypt path hasn't run
+yet: iBoot uses it when it loads an 8900 container, such as the kernelcache. iBoot then goes on to the NAND: it probes each chip enable (writes
 0x77800 | bank to 0x0, command 0xff then 0x90 to 0x8, waits on 0x48, reads the ID at 0x80), times out on all of
 them, and then starts its own USB OTG driver (recovery mode), waiting for the core's reset (0x38400010). So the
 next pieces are the bootrom stand-ins, then the NAND controller (the 1G branch and openiBoot have it).
@@ -261,6 +265,8 @@ GPIO 0x700). iBoot prints nothing on UART0 so far.
    NOR, loads iBoot from it to 0x18000000 and starts it. See "The 1G's NOR" below for what a NOR has to hold.
    SPI and the LCD panel done (2026-10-15, efb02708ae): iBoot reads the panel's ID, sets up the display and
    then calls the bootrom's USB stack, which the machine doesn't have. See "iBoot 1.1.5 and the bootrom" below.
+   The bootrom's services done (2026-10-15, 4b79b3893f): iBoot gets to the NAND, finds none and starts USB
+   recovery mode.
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
 5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.

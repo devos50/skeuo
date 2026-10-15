@@ -32,23 +32,25 @@ Read the plan first. Steps 1 and 2 are done and pushed (Skeuo main b7ee155, qemu
 
 ## State of the code
 
-Committed in `emulator/` on branch `skeuo-multi-device` (not pushed): 15f03bfac8..efb02708ae, the timer and chip ID
+Committed in `emulator/` on branch `skeuo-multi-device`: 15f03bfac8..4b79b3893f, the timer and chip ID
 properties, I2C and AES under `CONFIG_S5L` (AES with `dma-mask`, `big-endian-words` and readable key/IV/type
 registers), and the `iPod-Touch-1G` machine with `s5l8900.clock` and 2 MB of RAM at 0x18000000. Then
 (2ad617092f..efb02708ae) the GPIO's `fsel-offset`, the SPI's S5L8900 properties, and the 1G's SPI controllers and LCD
-panel. The 2G still boots, suspends and resumes (checked on a clone of a 2.1.1 bundle). The NOR format LLB needs is
-in the plan ("The 1G's NOR").
+panel, and (4b79b3893f) `s5l8900.bootrom` in place of the bootrom. The 2G still boots, suspends and resumes (checked
+on a clone of a 2.1.1 bundle). The NOR format LLB needs is in the plan ("The 1G's NOR").
 
 ## Where it stands
 
 LLB runs from the NOR, checks and decrypts iBoot and starts it at 0x18000000. iBoot reads the LCD panel's ID over
-SPI1 (the shared `s5l.spi` set up as the S5L8900's, and a panel model), sets up the display, and then calls the
-bootrom's USB stack through a jump table at 0x20000000, where the machine has nothing: it panics. iBoot also calls the
-bootrom's 8900 engine there. See "iBoot 1.1.5 and the bootrom" in the plan. Nothing on the serial port yet.
+SPI1, sets up the display, calls the bootrom's USB setup (the machine's `s5l8900.bootrom` stands in for the bootrom's
+jump table), then probes the NAND bank by bank, finds nothing and starts USB recovery mode with its own OTG driver,
+waiting on the core's reset (0x38400010). See "iBoot 1.1.5 and the bootrom" in the plan. Nothing on the serial port
+yet.
 
-Next: Skeuo-written stand-ins for those bootrom entries (decide how: stubs in the VROM region or a device behind
-it). With do-nothing stubs loaded by hand iBoot gets to the NAND, probes every bank, times out and starts USB recovery
-mode, so the NAND controller comes after that (the kernel is in the NAND in 1.1.x).
+Next: the NAND controller (and its ECC, and the ADM if iBoot's NAND driver uses it), ported from the ipod_touch_1g
+branch as 1G models with VMState. Start by answering the chip-ID probe (0x8 = 0x90, ID at 0x80) and watch what iBoot
+reads next, before building a NAND image for 1.1.x (the kernel is in the NAND). Cheap on the side: see whether
+iBoot's console can be turned on (an NVRAM variable such as debug-uarts) so it prints on UART0.
 
 ## Tools
 
