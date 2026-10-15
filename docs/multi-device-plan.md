@@ -237,21 +237,45 @@ GPIO 0x700). iBoot prints nothing on UART0 so far.
 pages come through DMAC0 (a PL080, peripheral 8). The registers are in the model's comment. The ECC engine computes
 nothing: it fails only all-0xff sectors, as the real one does for erased pages, which the FIL relies on.
 
-iBoot 1.1.5's NAND stack is Whimory 2.1 (FTL, VFL, FIL "H1"), the "legacy" format openiBoot reads. iBoot opens it in
-FUN_18015ca0, and the NAND has to hold, all still to be made:
+iBoot 1.1.5's NAND stack is Whimory 2.1 (FTL, VFL, FIL "H1"), the "legacy" format openiBoot reads. Since
+2026-10-15 (qemu-ios `skeuo-multi-device` 88a5b4ce76, cb0998517f) the model presents a disk image in it, like the
+2G's (`nand-disk`/`nand-overlay`; `nand-epoch` is refused), in `hw/arm/s5l8900_nand_disk.c`. What iBoot 1.1.5 needs
+(FUN_18015ca0 opens it), checked in Ghidra and by running it:
 
-- a signature page in block 0 of bank 0, its first word 0x43303033 (the "AND" version iBoot prints);
-- on every bank, a page starting with "DEVICEINFOBBT" in the last 10% of the blocks (FUN_180157a0);
-- per bank, the VFL context in the blocks that page names, with the bad block map; the newest copy wins
-  (VFL_Open, FUN_18015994);
-- the FTL context (a page with spare type 'C' in the context block) and its map, erase-count and log tables
-  (FTL_Open, FUN_18014868);
-- then the filesystem through the FTL: iBoot mounts HFS+ and loads the kernelcache (an 8900 container, which the
-  bootrom stand-in decrypts) from it.
+- **The geometry** iBoot prints and keeps at 0x18024530/0x18024560: 4096 superblocks, 3872 user superblocks, 1024
+  pages per superblock; VFL virtual blocks start at physical block 201, the FTL keeps 23 blocks for itself (3
+  context, 20 free). So logical block n is FTL block 23 + n is physical block 224 + n on every bank, which uses the
+  bank's last block too.
+- **Signature**: 0x43303033 in the first word of any page of block 0 of bank 0 (the generator's 0x43303032 was 1.1's).
+- **DEVICEINFOBBT** on every bank, in one of the first 3 pages of a block in the last 10%, and it must carry the
+  factory bad block table (length at 0x34, a bit per block from 0x38, set = good): VFL_Open looks for its context
+  only in blocks the table calls good. The generator's page had the magic and no table. It is in the last block,
+  which the VFL then marks bad (aBadMark is a bit per 8 blocks, most significant first) and replaces by reserved
+  block 5 (aBadMapTable[0] = 4095, wBadMapTableMaxIdx 1, reserved area 5-200).
+- **VFL context**: the first good block among 1-199 with a context page (spare byte 8 = 0, byte 9 = 0x80) gives
+  awInfoBlk (0x7a2); of those blocks the one whose page 0 has the lowest non-zero spare age wins, and its last group
+  of 8 copies is read. The bank with the highest dwGlobalCxtAge gives aFTLCxtVbn. Checksums at 0x7f8 (sum and XOR,
+  seed 0xAABBCCDD); iBoot's check only fails when the sum is wrong and the XOR right.
+- **FTL context**: of FTL blocks aFTLCxtVbn, the one whose page 0 has spare type 0x43-0x4f and the lowest age; its
+  meta data is the last page with spare type 'C' (searched backwards). The map (4 pages), log map (17), erase
+  counters (4) and read counters (4, only with dwVersion 0x46560000) must all be readable: they point at the zero
+  first page. The generator's struct layouts (vfl.h, ftl.h) match iBoot 1.1.5.
+- **Spare**: 12 bytes of meta data, then the ECC (zero here). A data page's meta holds its logical page and 0xff in
+  byte 10 (FTL_Read complains otherwise).
+- **Partitions**: iBoot reads only an MBR (the four entries at 0x1be, any non-zero type, no 0x55aa check, no GPT),
+  with LBAs in the block device's 2048-byte blocks (falling back to 512 if the partitions don't fit). Partition 1
+  is `nand0a`, the default boot-partition. 1.1.5's fstab mounts disk0s1 at / (ro) and disk0s2 at /private/var.
+- iBoot then mounts the HFSX system volume, loads `/System/Library/Caches/com.apple.kernelcaches/
+  kernelcache.s5l8900xrb` (the IPSW's 8900 container, encrypted) to 0x0b000000, has the bootrom stand-in decrypt it
+  (entry 0x30), decompresses it and starts the kernel, which runs (in FIQ mode around 0xc006152c-0xc0061640 after
+  20 s) with nothing on the serial port.
 
-Like the 2G (`ipod_touch_nand.c`, which presents a disk image as a freshly formatted VSVFL NAND), the model could
-present a 1.1.x filesystem image in this format with an overlay for writes; that is step 4. The kernel's driver goes
-through the ADM, which the ipod_touch_1g branch has an HLE of.
+Still to do: programming and erasing (iBoot's FIL only reads; the kernel drives the NAND through the ADM, which the
+ipod_touch_1g branch has an HLE of), and folding the 1G's overlay in `nand.py`. The kernel's partition scheme is to
+check: the generator wrote an MBR with a protective 0xEE entry and a GPT for 1.1, which iBoot 1.1.5 doesn't read.
+`pipeline/tools/1g/make_nand_disk_1g.py` builds a test disk from the 1.1.5 IPSW: the root filesystem is a FileVault
+(encrcdsa) DMG, VFDecrypt key c7973558e8f6af22e38d4573737d1533f1d5eec202bf86a32d941975d76f8906c7f0afe4 (from The
+iPhone Wiki), holding an Apple Partition Map with the HFSX volume ("LittleBear4B1.N45Bundle").
 
 ## App
 
@@ -290,8 +314,10 @@ through the ADM, which the ipod_touch_1g branch has an HLE of.
    then calls the bootrom's USB stack, which the machine doesn't have. See "iBoot 1.1.5 and the bootrom" below.
    The bootrom's services done (2026-10-15, 4b79b3893f): iBoot gets to the NAND, finds none and starts USB
    recovery mode. The NAND controller done (2026-10-15, 5fbb206159): iBoot finds the NAND and initialises its FTL,
-   and stops because the NAND is empty. See "The 1G's NAND" below for what it has to hold.
+   and stops because the NAND is empty. The NAND as a disk image done (2026-10-15, cb0998517f, read only): iBoot
+   mounts 1.1.5's system volume, loads and decrypts the kernelcache and starts the kernel. See "The 1G's NAND".
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
+   The presentation and the options are done (step 3); writes into the overlay and `nand.py` are left.
 5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
 7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), 1.1.x, and `supported` once the support policy's

@@ -36,23 +36,26 @@ Committed in `emulator/` on branch `skeuo-multi-device`: 15f03bfac8..5fbb206159,
 properties, I2C and AES under `CONFIG_S5L` (AES with `dma-mask`, `big-endian-words` and readable key/IV/type
 registers), and the `iPod-Touch-1G` machine with `s5l8900.clock` and 2 MB of RAM at 0x18000000. Then
 (2ad617092f..efb02708ae) the GPIO's `fsel-offset`, the SPI's S5L8900 properties, and the 1G's SPI controllers and LCD
-panel, (4b79b3893f) `s5l8900.bootrom` in place of the bootrom, and (5fbb206159) the NAND controller, its ECC
-engine and the DMA controllers. The 2G still boots, suspends and resumes (checked on a clone of a 2.1.1 bundle). The
+panel, (4b79b3893f) `s5l8900.bootrom` in place of the bootrom, (5fbb206159) the NAND controller, its ECC
+engine and the DMA controllers, and (88a5b4ce76..cb0998517f) the NAND's contents from a disk image and the
+`nand-disk`/`nand-overlay` options (`nand-epoch` refused). The 2G still boots, suspends and resumes (checked on a clone of a 2.1.1 bundle). The
 NOR format LLB needs is in the plan ("The 1G's NOR").
 
 ## Where it stands
 
 LLB runs from the NOR, checks and decrypts iBoot and starts it at 0x18000000. iBoot reads the LCD panel's ID, sets up
 the display, calls the bootrom's USB setup (`s5l8900.bootrom` stands in), finds the NAND (`s5l8900.nand`: 8 banks,
-DMA, ECC) and initialises FIL, VFL and FTL, then stops: "[WMR:ERR] no signature or no production format", because
-the NAND is empty. It then fails to mount the root filesystem and starts USB recovery mode. iBoot's console is visible
-with `pipeline/tools/1g/iboot_console.sh`.
+DMA, ECC), opens Whimory's VFL and FTL on a disk image presented in Whimory 2.1's legacy format (`nand-disk`,
+`nand-overlay`), mounts 1.1.5's system volume (MBR partition 1, 2048-byte LBAs), loads the kernelcache from it, has
+the bootrom stand-in decrypt its 8900 container and starts the kernel. The kernel runs (FIQ mode, around
+0xc006152c-0xc0061640 after 20 s) and prints nothing: no serial console yet. What the NAND holds and why is in the
+plan ("The 1G's NAND").
 
-Next: put a filesystem on the NAND in Whimory 2.1's legacy format (see "The 1G's NAND" in the plan): the signature,
-the DEVICEINFOBBT pages, the VFL and FTL contexts, and the filesystem through the FTL, presented from a 1.1.x disk
-image the way the 2G's NAND model presents VSVFL. openiBoot's vfl/ftl code is the reference for the structures.
-Smaller things iBoot prints: "battery voltage error" (the PMU's ADC) and no debug-uarts (an NVRAM on the NOR would
-turn the serial console on).
+Next: the kernel on the serial log (boot-args such as `serial=1 debug=...` and debug-uarts need an NVRAM on the NOR;
+then whatever the kernel waits on). Later for the NAND: writes (the kernel drives the NAND through the ADM; the
+ipod_touch_1g branch has an HLE of it) into the overlay, folding the overlay in `nand.py`, and whether the 1.1.5
+kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1). Smaller things iBoot prints:
+"battery voltage error" (the PMU's ADC).
 
 ## Tools
 
@@ -63,7 +66,11 @@ turn the serial console on).
     encrypted and both signatures with the emulator's UID key (needs `openssl`).
   - `run1g.sh <nor> <seconds>` runs the machine headless and prints the serial output and a histogram of
     unimplemented accesses.
-  - `iboot_console.sh <nor> <seconds>` prints iBoot's console messages (through lldb, breaking on its puts).
+  - `iboot_console.sh <nor> <seconds>` prints iBoot's console messages (through lldb, breaking on its puts);
+    `NAND=nand-disk=<disk>,nand-overlay=<dir>` adds the NAND.
+  - `make_nand_disk_1g.py <extracted ipsw> <out> [data MB]` builds a NAND disk image from the 1.1.5 IPSW (needs
+    `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume and an empty data
+    volume, sparse.
   - `dis.py <bin> <base> <start> <end> [arm]` disassembles part of a raw binary (Thumb by default) with Xcode's clang
     and llvm-objdump. There's no capstone, so `-d in_asm` only shows raw bytes.
 - To try something in guest memory without a code change: `-device loader,file=<raw>,addr=<addr>,force-raw=on`
