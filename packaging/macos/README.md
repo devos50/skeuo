@@ -16,6 +16,7 @@ python/bin/python3              python-build-standalone's CPython 3.12, trimmed 
 python/lib/python3.12/...
 qemu/qemu-system-arm            a release build of the emulator submodule (build-qemu.sh)
 qemu/lib/*.dylib                its Homebrew dylibs, referenced as @loader_path/lib (bundle-qemu.sh)
+qemu/share/keymaps/en-us        the keymap QEMU's VNC server loads, in the data directory build-qemu.sh gives it
 ```
 
 A release build of the app runs its daemon from there (`app/src-tauri/src/lib.rs`, `runtime`);
@@ -23,9 +24,11 @@ A release build of the app runs its daemon from there (`app/src-tauri/src/lib.rs
 
 The steps, each usable on its own:
 
-- `build-qemu.sh [dir]`: configures and builds the emulator into `build/qemu` (only rebuilds once configured).
+- `build-qemu.sh [dir]`: configures and builds the emulator into `build/qemu` (only rebuilds once configured,
+  unless the options changed). Its data directory is `share/` next to the binary.
 - `bundle-qemu.sh <qemu-system-arm> <dir>`: copies QEMU and its non-system dylibs into `<dir>`, rewrites the
-  references, checks with `otool` that nothing points into Homebrew, and prints the oldest macOS each file runs on.
+  references, copies the en-us keymap (`-vnc` fails without it), checks with `otool` that nothing points into
+  Homebrew, and prints the oldest macOS each file runs on.
 - `fetch-python.sh <dir>`: downloads the pinned Python (cached in `build/cache`, checked by SHA-256) and trims it.
 - `tauri.bundle.json`: the resources, merged into the app's Tauri config by `tauri build --config`, so that
   `npm run tauri dev` doesn't need them.
