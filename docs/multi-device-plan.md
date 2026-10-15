@@ -8,7 +8,9 @@ Decisions (Martijn, 2026-10-14):
 - The models both devices share are renamed after the chip family (`ipod_touch_spi.c` → `s5l_spi.c`; `s5l87xx` was proposed first, but it
   doesn't cover the S5L8900), in one
   commit before the 1G's models arrive.
-- 1G firmware: 2.x and 3.x first; 1.1.x later, as its own step.
+- 1G firmware: 2.x and 3.x first; 1.1.x later, as its own step. **Changed (2026-10-15): 1.1.5 first.** Apple only
+  serves 1.1 to 1.1.5 for iPod1,1 (2.x and 3.x were paid upgrades, never on a public URL), and the 1G branch only
+  ever booted 1.1.x. 2.x and 3.x come later, from IPSWs users supply.
 - The 1G ships without Wi-Fi at first; Wi-Fi is a later capability.
 - Experimental devices are shown to every user, marked as experimental.
 
@@ -84,8 +86,13 @@ dylibs, packaging-plan.md) and every fix to a shared model would have to be made
   status fields sit at different bits), timer (7 timers on the 1G, 8 on the 2G, same layout), GPIO, sysic, chip
   ID, SHA1, USB OTG (the 1G branch's `s5l8900_usb_hwcfg` already parameterizes the OTG core) and PHY, MBX, TV out
   and SDIO.
-  - **Not AES**: its registers sit at different offsets on the two chips (the input address at 0x20 on the 1G
-    branch, 0x28 on the 2G), so it stays `ipod_touch_aes.c` for the 2G and the 1G gets its own.
+  - **AES is shared after all** (found 2026-10-15 in LLB's driver): the registers are the same; the 1G branch
+    had the input and output addresses swapped, unnoticed because the boot chain works in place. The S5L8900's
+    boot chain passes SRAM at the uncached alias (bit 31 set) and writes the key and IV as big-endian words, so
+    the model has `dma-mask` and `big-endian-words`. It keeps its `ipod_touch_aes` name until the next rename.
+  - **I2C** has the same layout on both chips and builds under `CONFIG_S5L` (still `ipod_touch_i2c`).
+  - **Timer**: the S5L8900 keeps its interrupt status at 0x10000 (0x118 on the S5L8720), with a latch at 0xf8
+    (`irqstat-offset`, `irqlatch-offset`). **Chip ID**: only a revision (2) at the top of 0x4 (`chip`).
   - **SDIO** is renamed but still builds with the 2G: the 2G's BCM4325 Wi-Fi card is built into it. The 1G's card
     is a different chip (a Marvell), so the card has to become a device on an SDIO bus before the 1G's Wi-Fi.
   - **SPI** no longer creates the board's devices itself; the machine puts the NOR and the multitouch controller
@@ -165,6 +172,28 @@ The iPod touch 1G shipped iPhone OS 1.1 to 3.1.3.
   iPhone OS 3.0 on the 2G, some 1G upgrades were paid and may never have been on a public URL; those need "pick a
   local IPSW".
 
+### The 1G's NOR (found 2026-10-15)
+
+What LLB 1.1.5 (iBoot-204.3.16) needs from the NOR, so that Skeuo can write one itself (today
+`pipeline/tools/1g/make_nor_1g.py` builds a test NOR from an IPSW):
+
+- The image list's superblock at 0x8400: "2GMI", granule (0x40), image offset and boot block size (in granules),
+  the number of granules to scan, and a CRC-32 of the first 0x30 bytes at 0x30. Images from offset × granule.
+- LLB looks for the list on `nor0` (then `spi0`) and boots the `ibot` image; a failure ends in its USB DFU mode
+  through the bootrom's routines, which the machine doesn't have.
+- Each image as a restore leaves it, which differs from the IPSW's Img2 (header version 3):
+  - its length in granules at 0x18 (0xffffffff in the IPSW);
+  - flags at 0x1c: bit 24 (installed), bit 1 (signed for this device) and bit 9 (data encrypted);
+  - the first extension's size at 0x60 has to cover what its CRC (at 0x68) covers: the IPSW's value plus 0xc;
+  - the header's CRC-32 at 0x64 over 0x0-0x63;
+  - the data AES-128-CBC encrypted (zero IV) with the device's image key: 16 fixed bytes encrypted with the UID key
+    and a fixed IV (both in LLB, and in `ipod_touch_1g.c`);
+  - a data signature at 0x20-0x5f: SHA-1 of the encrypted data plus 44 fixed bytes, encrypted with the image key;
+  - a header signature at 0x3e0-0x3ff: SHA-1 of 0x0-0x3df plus 12 fixed bytes, encrypted with the image key.
+  The image key comes from the emulator's UID key, so a NOR made this way only works in the emulator, which is fine.
+- Still to learn: where a real restore puts LLB (for now it is the first image, and the machine finds it by tag),
+  and whether iBoot needs more (SysCfg at 0x4000 holds only a stub).
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -196,6 +225,9 @@ The iPod touch 1G shipped iPhone OS 1.1 to 3.1.3.
    the emulator, and the iPod2,1 profile uses `iPod-Touch-2G`. A 2.1.1 device boots, suspends and resumes with it.
 3. **The 1G machine on `skeuo`**, with stub regions for the parts not ported yet: first to LLB without the bootrom,
    then iBoot, then the kernel on the serial log, then SpringBoard from a NAND image made by hand.
+   LLB and iBoot from the NOR done (2026-10-15, qemu-ios `skeuo-multi-device` b0b41a843c): LLB runs from the
+   NOR, loads iBoot from it to 0x18000000 and starts it; iBoot sets up the display and stops polling SPI1 (the
+   LCD panel). See "The 1G's NOR" below for what a NOR has to hold.
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
 5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
