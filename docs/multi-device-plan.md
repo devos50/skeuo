@@ -96,7 +96,13 @@ dylibs, packaging-plan.md) and every fix to a shared model would have to be made
   - **SDIO** is renamed but still builds with the 2G: the 2G's BCM4325 Wi-Fi card is built into it. The 1G's card
     is a different chip (a Marvell), so the card has to become a device on an SDIO bus before the 1G's Wi-Fi.
   - **SPI** no longer creates the board's devices itself; the machine puts the NOR and the multitouch controller
-    on the controllers' buses.
+    on the controllers' buses. **On the S5L8900** (found 2026-10-15 in iBoot 1.1.5's driver) the word size sits at
+    bits 13-14 of the configuration, the FIFOs are 8 bytes deep with their levels at bits 4-7 (TX) and 8-11 (RX) of
+    the status, and there is no TX count register (0x4c). The driver is interrupt driven and treats TX empty as an
+    event it acknowledges. All properties of `s5l.spi` (`cfg-word-size-shift`, `status-*`, `rx-fifo-depth`,
+    `tx-count`); the 2G's defaults are unchanged.
+  - **GPIO**: the S5L8900's pin configuration register is at 0x320 (0x1e0 on the S5L8720), the `fsel-offset`
+    property; output lines now cover 32 pads (the 1G's LCD chip select is 0x1800).
   - Not compared yet: I2C, the watchdog, and the 2G-only blocks; they keep `ipod_touch_*` names until the port
     shows whether the 1G has them.
 - **Separate chips on both boards.** The LIS302DL accelerometer is the same part; the 1G uses the 2G model
@@ -194,6 +200,32 @@ What LLB 1.1.5 (iBoot-204.3.16) needs from the NOR, so that Skeuo can write one 
 - Still to learn: where a real restore puts LLB (for now it is the first image, and the machine finds it by tag),
   and whether iBoot needs more (SysCfg at 0x4000 holds only a stub).
 
+### iBoot 1.1.5 and the bootrom (found 2026-10-15)
+
+iBoot 1.1.5 (iBoot-204.3.16, at 0x18000000; in Ghidra as `/iPod Touch 1G/1.1.5/iBoot.n45ap.1.1.5.bin`) still
+relies on the bootrom, through a jump table at 0x20000000 that it calls directly (ARM, `blx`):
+
+- **USB**: its main init (0x18000794) calls 0x180036ec, which fills a context (two 64 KB buffers of 0xa5 and 0x5a,
+  0x21000 bytes at 0x22000000), registers interrupts 0x27, 0x28 and 0x13 (USB OTG) with handlers that jump to
+  0x20000034, 0x20000038 and 0x2000003c, and calls 0x20000044 (start) and 0x20000024 (with the clock) with it. The
+  machine has nothing at 0x20000000, so iBoot runs into empty memory and panics.
+- **The 8900 engine**: 0x2000002c and 0x20000030 take three arguments and return 1 on success (iBoot's wrappers at
+  0x18003814 and 0x180037a8 gate clock 0x2d first). These are the routines the ipod_touch_1g branch patched in the
+  bootrom's pointer table (0x2000008c/0x20000090).
+
+Without a bootrom the machine has to stand in for these, as it already does for the bootrom's loading of LLB:
+Skeuo-written stubs or a device behind the table, not Apple code. With stubs that do nothing (and return 1 for
+0x2c/0x30, loaded by hand with `-device loader`), iBoot goes on to the NAND: it probes each chip enable (writes
+0x77800 | bank to 0x0, command 0xff then 0x90 to 0x8, waits on 0x48, reads the ID at 0x80), times out on all of
+them, and then starts its own USB OTG driver (recovery mode), waiting for the core's reset (0x38400010). So the
+next pieces are the bootrom stand-ins, then the NAND controller (the 1G branch and openiBoot have it).
+
+The LCD panel (`ipod-touch-1g.lcd-panel`, SPI1, chip select GPIO 0x1800): iBoot reads the ID from registers
+0x5a-0x5c and waits for bit 0 of 0x15. The ID 71 c2 00 (from the 1G branch) decodes as PVT1, TMD, project M68,
+driver NSC-Merlot; 0x10 in the third byte would say N45. iBoot keeps it for the device tree (`lcd-panel-id`), so
+whether the kernel cares is still to see. iBoot also writes 2-byte commands to something on SPI0 (chip select
+GPIO 0x700). iBoot prints nothing on UART0 so far.
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -226,8 +258,9 @@ What LLB 1.1.5 (iBoot-204.3.16) needs from the NOR, so that Skeuo can write one 
 3. **The 1G machine on `skeuo`**, with stub regions for the parts not ported yet: first to LLB without the bootrom,
    then iBoot, then the kernel on the serial log, then SpringBoard from a NAND image made by hand.
    LLB and iBoot from the NOR done (2026-10-15, qemu-ios `skeuo-multi-device` b0b41a843c): LLB runs from the
-   NOR, loads iBoot from it to 0x18000000 and starts it; iBoot sets up the display and stops polling SPI1 (the
-   LCD panel). See "The 1G's NOR" below for what a NOR has to hold.
+   NOR, loads iBoot from it to 0x18000000 and starts it. See "The 1G's NOR" below for what a NOR has to hold.
+   SPI and the LCD panel done (2026-10-15, efb02708ae): iBoot reads the panel's ID, sets up the display and
+   then calls the bootrom's USB stack, which the machine doesn't have. See "iBoot 1.1.5 and the bootrom" below.
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
 5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.

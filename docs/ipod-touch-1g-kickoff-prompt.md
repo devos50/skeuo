@@ -32,19 +32,23 @@ Read the plan first. Steps 1 and 2 are done and pushed (Skeuo main b7ee155, qemu
 
 ## State of the code
 
-Committed in `emulator/` on branch `skeuo-multi-device` (not pushed): 15f03bfac8..b0b41a843c, the timer and chip ID
+Committed in `emulator/` on branch `skeuo-multi-device` (not pushed): 15f03bfac8..efb02708ae, the timer and chip ID
 properties, I2C and AES under `CONFIG_S5L` (AES with `dma-mask`, `big-endian-words` and readable key/IV/type
-registers), and the `iPod-Touch-1G` machine with `s5l8900.clock` and 2 MB of RAM at 0x18000000. The 2G still boots,
-suspends and resumes (checked on a clone of a 2.1.1 bundle). The NOR format LLB needs is in the plan ("The 1G's NOR").
+registers), and the `iPod-Touch-1G` machine with `s5l8900.clock` and 2 MB of RAM at 0x18000000. Then
+(2ad617092f..efb02708ae) the GPIO's `fsel-offset`, the SPI's S5L8900 properties, and the 1G's SPI controllers and LCD
+panel. The 2G still boots, suspends and resumes (checked on a clone of a 2.1.1 bundle). The NOR format LLB needs is
+in the plan ("The 1G's NOR").
 
 ## Where it stands
 
-LLB runs from the NOR, checks and decrypts iBoot and starts it at 0x18000000. iBoot sets up the display (unimplemented)
-and the SPI controllers, then polls SPI1 forever: it is probably reading the LCD panel's ID. Nothing on the serial port
-yet (LLB's prints don't go to UART0 either).
+LLB runs from the NOR, checks and decrypts iBoot and starts it at 0x18000000. iBoot reads the LCD panel's ID over
+SPI1 (the shared `s5l.spi` set up as the S5L8900's, and a panel model), sets up the display, and then calls the
+bootrom's USB stack through a jump table at 0x20000000, where the machine has nothing: it panics. iBoot also calls the
+bootrom's 8900 engine there. See "iBoot 1.1.5 and the bootrom" in the plan. Nothing on the serial port yet.
 
-Next: model SPI on the 1G (the shared `s5l.spi` with the S5L8900's FIFO status bits, see the plan) and the LCD panel on
-SPI1, then follow iBoot to the kernel. iBoot's own image loading will want the NAND (the kernel is in the NAND in 1.1.x).
+Next: Skeuo-written stand-ins for those bootrom entries (decide how: stubs in the VROM region or a device behind
+it). With do-nothing stubs loaded by hand iBoot gets to the NAND, probes every bank, times out and starts USB recovery
+mode, so the NAND controller comes after that (the kernel is in the NAND in 1.1.x).
 
 ## Tools
 
@@ -57,10 +61,13 @@ SPI1, then follow iBoot to the kernel. iBoot's own image loading will want the N
     unimplemented accesses.
   - `dis.py <bin> <base> <start> <end> [arm]` disassembles part of a raw binary (Thumb by default) with Xcode's clang
     and llvm-objdump. There's no capstone, so `-d in_asm` only shows raw bytes.
+- To try something in guest memory without a code change: `-device loader,file=<raw>,addr=<addr>,force-raw=on`
+  (e.g. stubs at 0x20000000). `-monitor stdio` with `info registers` or `xp` piped in shows where a headless run is.
 - Tracing: `-d in_asm,int,unimp -D trace.log`; "Taking exception 4 [Data Abort]" lines carry the DFAR.
 - **lldb** works as the debugger: start QEMU with `-gdb tcp::12345 -S`, then `lldb --arch armv6` and
   `gdb-remote 12345`. `-trace 'ipod_touch_aes*'` shows the AES registers; the monitor's `gva2gpa` the page table.
-- **Ghidra**: `/iPod Touch 1G/1.1.5/LLB.n45ap.1.1.5.bin` is the 1.1.5 LLB that runs (base 0x22000000). The older
+- **Ghidra**: `/iPod Touch 1G/1.1.5/LLB.n45ap.1.1.5.bin` is the 1.1.5 LLB that runs (base 0x22000000), and
+  `iBoot.n45ap.1.1.5.bin` next to it the iBoot it loads (base 0x18000000). The older
   `LLB.n45ap.RELEASE` is a different build: its addresses drift and some checks differ. The project `ios_kernel_reverse` has an "iPod Touch 1G" folder with LLB.n45ap.RELEASE,
   bootrom_s5l8900, openiboot.bin, ipt_1g_openiboot.bin, iboot_ram.bin, iBSS.n45ap.RELEASE.dfu.decrypted,
   kernelcache.out, nordump.bin and 1.x userland. Use the `mcp__ghidra__*` tools (or the plugin's HTTP API on
