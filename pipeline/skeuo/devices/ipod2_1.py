@@ -21,7 +21,7 @@ PROFILE = Profile(
     name="iPod touch (2nd generation)",
     board="n72ap",
     soc="S5L8720",
-    machine="iPod-Touch",
+    machine="iPod-Touch-2G",
     firmwares={
         "2.1.1": {
             "build": "5F138",

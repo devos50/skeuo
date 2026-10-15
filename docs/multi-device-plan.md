@@ -1,11 +1,12 @@
 # Skeuo with more than one device: plan
 
-Status: agreed (2026-10-14). The first new device is the
+Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). The first new device is the
 iPod touch 1G (S5L8900, `n45ap`, `iPod1,1`), whose emulator lives on the
 [`ipod_touch_1g` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/ipod_touch_1g).
 
 Decisions (Martijn, 2026-10-14):
-- The models both devices share are renamed after the chip family (`ipod_touch_spi.c` → `s5l87xx_spi.c`), in one
+- The models both devices share are renamed after the chip family (`ipod_touch_spi.c` → `s5l_spi.c`; `s5l87xx` was proposed first, but it
+  doesn't cover the S5L8900), in one
   commit before the 1G's models arrive.
 - 1G firmware: 2.x and 3.x first; 1.1.x later, as its own step.
 - The 1G ships without Wi-Fi at first; Wi-Fi is a later capability.
@@ -78,12 +79,24 @@ dylibs, packaging-plan.md) and every fix to a shared model would have to be made
 
 - **The same IP block with small differences: one model.** Start from the 2G model (it has the VMState and the
   fixes) and add the 1G's differences as qdev properties, set by the machine (a register's reset value, a FIFO depth,
-  a revision). Rename these after the chip family, not the device: `hw/arm/ipod_touch_spi.c` →
-  `hw/arm/s5l87xx_spi.c` and so on, type names `s5l87xx-spi`. Candidates, to be confirmed against the 1G branch:
-  SPI, timer, GPIO, VIC wiring, sysic, chip ID, SHA1, AES, USB OTG (the 1G branch's `s5l8900_usb_hwcfg` already
-  parameterizes the OTG core), TV out, SDIO.
-- **Separate chips on both boards: already shared.** The PCF50633 PMU and the LIS302DL accelerometer are the same
-  parts; the 1G uses the 2G models, with the 1G's I2C addresses and GPIOs set by the machine.
+  a revision). These are named after the chip family, not the device: `hw/arm/s5l_spi.c`, type `s5l.spi`, and so
+  on. Done in step 2 for the blocks the 1G branch also models, after comparing their registers: SPI (the FIFO
+  status fields sit at different bits), timer (7 timers on the 1G, 8 on the 2G, same layout), GPIO, sysic, chip
+  ID, SHA1, USB OTG (the 1G branch's `s5l8900_usb_hwcfg` already parameterizes the OTG core) and PHY, MBX, TV out
+  and SDIO.
+  - **Not AES**: its registers sit at different offsets on the two chips (the input address at 0x20 on the 1G
+    branch, 0x28 on the 2G), so it stays `ipod_touch_aes.c` for the 2G and the 1G gets its own.
+  - **SDIO** is renamed but still builds with the 2G: the 2G's BCM4325 Wi-Fi card is built into it. The 1G's card
+    is a different chip (a Marvell), so the card has to become a device on an SDIO bus before the 1G's Wi-Fi.
+  - **SPI** no longer creates the board's devices itself; the machine puts the NOR and the multitouch controller
+    on the controllers' buses.
+  - Not compared yet: I2C, the watchdog, and the 2G-only blocks; they keep `ipod_touch_*` names until the port
+    shows whether the 1G has them.
+- **Separate chips on both boards.** The LIS302DL accelerometer is the same part; the 1G uses the 2G model
+  (`hw/arm/lis302dl.c`), with the 1G's I2C address and GPIOs set by the machine. The PMU is less clear: the 1G
+  branch reads the RTC as BCD registers (`RTCSC` at 0x59 ... `RTCYR` at 0x5F, as on a PCF50633), the 2G model
+  as a counter at 0x5C. To check before the 1G uses `ipod_touch_pcf50633_pmu.c`; the 2G's PMU may be a
+  different part.
 - **Hardware that really differs: separate models.** The 8900 engine and the ADM (S5L8900 only), the 1G's NAND
   controller and ECC, the 1G's LCD controller and panel, the first-generation multitouch controller, the 1G's clock
   tree, and parallel NOR (QEMU's `pflash_cfi02`) instead of SPI NOR. Each new model gets VMState from the start.
@@ -109,8 +122,8 @@ same for every machine:
 
 ### Build
 
-`CONFIG_IPOD_TOUCH_1G` and `CONFIG_IPOD_TOUCH_2G` in `hw/arm/Kconfig`, both selecting `CONFIG_S5L87XX` for the
-shared models. The release build (packaging-plan.md) builds both.
+`CONFIG_IPOD_TOUCH_1G` and `CONFIG_IPOD_TOUCH_2G` in `hw/arm/Kconfig`, both selecting `CONFIG_S5L` for the
+shared models (`CONFIG_S5L` exists since step 2). The release build (packaging-plan.md) builds both.
 
 ## Pipeline: device profiles
 
@@ -178,7 +191,9 @@ The iPod touch 1G shipped iPhone OS 1.1 to 3.1.3.
    reading from it. Changes no behaviour, and removes the 2G assumptions from the code that ships now. Done
    (2026-10-15); the key map, the device frame and the bootrom slot per chip are still the 2G's, for step 6.
 2. **The machine contract and the rename**, in the emulator: rename the 2G machine to `iPod-Touch-2G` (with the
-   alias), rename the shared models to `s5l87xx_*`, write the contract down. Update `emulator.py` to the new name.
+   alias), rename the shared models to `s5l_*`, write the contract down. Update `emulator.py` to the new name.
+   Done (2026-10-15) on qemu-ios branch `skeuo-multi-device`: the contract is `docs/system/arm/ipod-touch.rst` in
+   the emulator, and the iPod2,1 profile uses `iPod-Touch-2G`. A 2.1.1 device boots, suspends and resumes with it.
 3. **The 1G machine on `skeuo`**, with stub regions for the parts not ported yet: first to LLB without the bootrom,
    then iBoot, then the kernel on the serial log, then SpringBoard from a NAND image made by hand.
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
