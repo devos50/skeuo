@@ -175,7 +175,8 @@ The iPod touch 1G shipped iPhone OS 1.1 to 3.1.3.
 ## Order of work
 
 1. **Profiles with only the 2G.** `pipeline/skeuo/devices/` with the iPod2,1 profile, and the pipeline and app
-   reading from it. Changes no behaviour, and removes the 2G assumptions from the code that ships now.
+   reading from it. Changes no behaviour, and removes the 2G assumptions from the code that ships now. Done
+   (2026-10-15); the key map, the device frame and the bootrom slot per chip are still the 2G's, for step 6.
 2. **The machine contract and the rename**, in the emulator: rename the 2G machine to `iPod-Touch-2G` (with the
    alias), rename the shared models to `s5l87xx_*`, write the contract down. Update `emulator.py` to the new name.
 3. **The 1G machine on `skeuo`**, with stub regions for the parts not ported yet: first to LLB without the bootrom,

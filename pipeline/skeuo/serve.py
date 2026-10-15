@@ -13,7 +13,8 @@ and gets one response per request, with the same id, once the request is done:
 Requests run concurrently, so responses can come in any order. Between them come events, which have no id:
 
   {"event": "ready", "protocol": 1, "library": ..., "bootrom": false}      once, at startup; bootrom: devices boot
-                                                                             through a bootrom dump (optional)
+                                                                             through a bootrom dump (optional), the
+                                                                             ones whose profile's bootrom it is
   {"event": "state", "device": id, "state": "running", "vnc": {...}}         see STATES
   {"event": "device", "device": {...}}                                       a device was added or changed
   {"event": "removed", "device": id}
@@ -21,6 +22,8 @@ Requests run concurrently, so responses can come in any order. Between them come
   {"event": "usb", "device": id, "attached": true, "serial": ...}         seen by libimobiledevice, or gone
   {"event": "log", "device": id, "message": ...}                             the pipeline's log lines
   {"event": "warning", "message": ...}
+
+Requests that take a "product" find it from the version when only one device has that version.
 
 A device is a bundle directory in the library, and its id is the directory's name, which stays the same when the
 device is renamed. Only one device runs at a time; the daemon refuses to run a second one. The running device's
@@ -31,11 +34,13 @@ When stdin closes (the app quit) or the daemon gets SIGTERM/SIGINT, it suspends 
 
 Requests (params, then result):
   list           {}                                     {"devices": [device, ...], "running": id or null}
-  device_types   {}                                     {"device_types": [{"product", "name", "versions"}]}: what
-                                                        create can make, with each type's versions (as ipsws)
+  device_types   {}                                     {"device_types": [{"product", "name", "board", "soc",
+                                                        "capabilities", "support", "bootrom", "versions"}]}: the
+                                                        device profiles (devices/), which create can make, with each
+                                                        one's versions (as ipsws)
   ipsws          {}                                     {"ipsws": [...]}: the versions, cached or downloadable
-  download_ipsw  {"version"}                            {"path"}; progress events (with "version"); cancel stops it
-  delete_ipsw    {"version"}                            {}: removes it (and a partial download) from the cache
+  download_ipsw  {"version", "product"}                 {"path"}; progress events (with "version"); cancel stops it
+  delete_ipsw    {"version", "product"}                 {}: removes it (and a partial download) from the cache
   create         {"product", "name", "version" | "ipsw", "device_certificate", "lockdown", "nor_images", "settings"}
                                                         {"device"}; the device event comes first, then progress
   run            {"device", "cold_boot"}                {"device", "vnc": {"port", "websocket"}, "resumed"}
@@ -64,12 +69,13 @@ import tempfile
 import threading
 import traceback
 
+from . import devices
 from . import download as downloads
 from .activation import ActivationError, load_device_certificate
 from .bundle import MACHINE_SETTINGS, Bundle, BundleError
 from .emulator import EmulatorError, kill_all
 from .hfs import HFSError
-from .ipsw import DEVICE_TYPES, IPSW, IPSWError
+from .ipsw import IPSW, IPSWError
 from .nand import NANDError
 from .restore import restore
 from .session import Session
@@ -81,8 +87,8 @@ PROTOCOL = 1
 # and while it runs "starting", "running", "suspending" and "stopping" (powering off).
 STATES = ("creating", "incomplete", "off", "suspended", "starting", "running", "suspending", "stopping")
 
-ERRORS = (ActivationError, BundleError, EmulatorError, HFSError, IPSWError, NANDError, downloads.DownloadError,
-          TrashError)
+ERRORS = (ActivationError, BundleError, devices.DeviceError, EmulatorError, HFSError, IPSWError, NANDError,
+          downloads.DownloadError, TrashError)
 
 
 class RequestError(Exception):
@@ -131,7 +137,7 @@ class Daemon:
     def __init__(self, library, qemu, bootrom, cache, usbmuxd, pair_records, out):
         self.library = library
         self.qemu = qemu
-        # optional: devices boot through it when it's there, and without it otherwise
+        # optional: devices boot through it when it's there and is their profile's bootrom, and without it otherwise
         self.bootrom = bootrom if bootrom and os.path.exists(bootrom) else None
         self.cache = cache
         self.usbmuxd = usbmuxd
@@ -281,11 +287,15 @@ class Daemon:
 
     def do_device_types(self, params):
         versions = downloads.available(self.cache)
-        return {"device_types": [{"product": product, "name": name,
-                                  "versions": [v for v in versions if v["product"] == product]}
-                                 for product, name in DEVICE_TYPES.items()]}
+        return {"device_types": [dict(profile.describe(),
+                                      versions=[v for v in versions if v["product"] == profile.product])
+                                 for profile in devices.profiles()]}
 
-    def _download(self, request_id, version, device_id=None):
+    def bootrom_for(self, profile):
+        """The bootrom to boot a device through: the daemon's, if it is the one of the device's chip."""
+        return self.bootrom if profile.bootrom.matches(self.bootrom) else None
+
+    def _download(self, request_id, profile, version, device_id=None):
         cancel = self.cancels[request_id] = threading.Event()
         last = [-1]
 
@@ -297,25 +307,28 @@ class Daemon:
                            fraction=round(done / total, 4), done=done, total=total)
 
         try:
-            return downloads.download(version, self.cache, progress=progress, cancel=cancel)
+            return downloads.download(profile, version, self.cache, progress=progress, cancel=cancel)
         except downloads.Cancelled:
             raise RequestError("cancelled", "the download was cancelled")
         finally:
             self.cancels.pop(request_id, None)
 
     def do_download_ipsw(self, params, request_id):
-        return {"path": self._download(request_id, params.get("version"))}
+        version = params.get("version")
+        profile = devices.for_version(version, params.get("product"))
+        return {"path": self._download(request_id, profile, version)}
 
     def do_delete_ipsw(self, params):
         version = params.get("version")
-        downloads.firmware(version)
+        profile = devices.for_version(version, params.get("product"))
+        downloads.firmware(profile, version)
         with self.lock:
             if any(info.get("version") == version for info in self.creating.values()):
                 raise RequestError("busy", "a device is being created from it")
             downloading = bool(self.cancels)
-        if downloading and not downloads.cached(version, self.cache):
+        if downloading and not downloads.cached(profile, version, self.cache):
             raise RequestError("busy", "it is being downloaded; cancel the download first")
-        downloads.delete(version, self.cache)
+        downloads.delete(profile, version, self.cache)
         return {}
 
     def do_cancel(self, params):
@@ -326,14 +339,21 @@ class Daemon:
 
     def do_create(self, params, request_id):
         name = (params.get("name") or "").strip()
-        product = params.get("product") or "iPod2,1"
-        if product not in DEVICE_TYPES:
+        product = params.get("product")
+        if product and product not in devices.PROFILES:
             raise RequestError("bad_request", "Skeuo can't emulate %s yet" % product)
         version, ipsw_path = params.get("version"), params.get("ipsw")
         if not ipsw_path and not version:
             raise RequestError("bad_request", "create needs a version or an IPSW")
-        if version and not ipsw_path and version not in downloads.FIRMWARES:
-            raise RequestError("bad_request", "Skeuo supports %s, not %s" % (", ".join(downloads.FIRMWARES), version))
+        profile = None
+        if version and not ipsw_path:
+            try:
+                profile = devices.for_version(version, product)
+            except devices.DeviceError as e:
+                raise RequestError("bad_request", str(e))
+            if version not in profile.firmwares:
+                raise RequestError("bad_request", "Skeuo supports %s, not %s"
+                                   % (", ".join(profile.firmwares), version))
         if params.get("device_certificate") and params.get("lockdown"):
             raise RequestError("bad_request", "device_certificate and lockdown exclude each other")
         settings = params.get("settings") or {}
@@ -355,9 +375,10 @@ class Daemon:
             # the card shows up before the download, as "creating"
             self.event("device", device=placeholder)
             if not ipsw_path:
-                ipsw_path = downloads.cached(version, self.cache) or self._download(request_id, version, device_id)
+                ipsw_path = downloads.cached(profile, version, self.cache) or \
+                    self._download(request_id, profile, version, device_id)
             ipsw = IPSW(ipsw_path, workdir, nor_images=params.get("nor_images"))
-            if ipsw.product != product:
+            if product and ipsw.product != product:
                 raise RequestError("bad_request", "%s is firmware for %s, not %s" % (ipsw_path, ipsw.product, product))
             if version and ipsw.version != version:
                 raise RequestError("bad_request", "%s is %s, not %s" % (ipsw_path, ipsw.version, version))
@@ -373,7 +394,7 @@ class Daemon:
                     self.event("progress", request=request_id, device=device_id, phase="restore",
                                fraction=fraction, message=str(message))
 
-            bundle = restore(ipsw, os.path.join(self.library, device_id), self.qemu, self.bootrom,
+            bundle = restore(ipsw, os.path.join(self.library, device_id), self.qemu, self.bootrom_for(ipsw.profile),
                              lockdown=params.get("lockdown"), device_certificate=certificate, name=name or None,
                              settings=settings, log=restore_log)
             self.event("progress", request=request_id, device=device_id, phase="restore", fraction=1.0,
@@ -408,7 +429,8 @@ class Daemon:
                                    % self.session.bundle.name)
             if device_id in self.creating:
                 raise RequestError("busy", "%s is still being created" % bundle.name)
-            session = Session(bundle, self.qemu, self.bootrom, vnc=True, cold_boot=bool(params.get("cold_boot")),
+            session = Session(bundle, self.qemu, self.bootrom_for(bundle.profile), vnc=True,
+                              cold_boot=bool(params.get("cold_boot")),
                               log=self.logger(device_id))
             self.session = session
             self.running, self.run_state = device_id, "starting"
@@ -578,6 +600,9 @@ class Daemon:
             if self.running != device_id or self.run_state != "running":
                 raise RequestError("not_running", "%s is not running" % device_id)
             emu = self.session.emu
+            profile = self.session.bundle.profile
+        if "accelerometer" not in profile.capabilities:
+            raise RequestError("bad_request", "the %s has no accelerometer" % profile.name)
         return {"orientation": emu.orientation(params.get("orientation"))}
 
     def do_shutdown(self, params):

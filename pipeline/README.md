@@ -133,11 +133,21 @@ python3 -m skeuo restore iPod2,1_4.0_8A293_Restore.ipsw ~/Skeuo/ipod-4.0 --devic
 The certificate is only accepted within its validity period, so when it has expired, `run` starts the device's
 clock (QEMU `-rtc base=`) a month before its expiry date.
 
+## Devices
+
+Everything that differs between the devices Skeuo emulates is in their profiles, one per product, in
+`skeuo/devices/` (`ipod2_1.py` for the iPod touch 2G): the board and chip, the emulator's machine, the firmware
+catalog (builds, download URLs and checksums, NAND epochs, the lockdownd patch), the bootrom's size and SHA-256, the
+NAND geometry, how a bundle is restored, the capabilities (`wifi`, `audio`, `accelerometer`, `suspend`, `usbmux`)
+and the support level (`supported` or `experimental`). The rest of the pipeline looks a device up by the product of
+its IPSW or bundle, and `serve`'s `device_types` hands the profiles to the app. Settings that need a capability the
+device lacks are refused.
+
 ## Supported firmware
 
 iPod touch 2G (`iPod2,1`): iPhone OS 2.1.1 (5F138), 2.2 (5G77a), 3.0 (7A341) and iOS 4.0 (8A293). Each needs the image keys in the
-emulator's GID key table, and a NAND formatted for the epoch of its NAND driver (`NAND_EPOCHS` in `skeuo/ipsw.py`;
-2.1.1 is epoch 1, 2.2 epoch 2, 3.0 epoch 3, 4.0 epoch 4). A bundle is one device with one firmware, so to switch between versions, restore one bundle per
+emulator's GID key table, and a NAND formatted for the epoch of its NAND driver (`nand_epoch` in the profile's
+firmware catalog; 2.1.1 is epoch 1, 2.2 epoch 2, 3.0 epoch 3, 4.0 epoch 4). A bundle is one device with one firmware, so to switch between versions, restore one bundle per
 version and run the one you want:
 
 ```bash

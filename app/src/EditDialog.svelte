@@ -7,6 +7,12 @@
   const RUNNING = ["starting", "running", "suspending", "stopping"];
   // settings that change the emulator's command line (MACHINE_SETTINGS in bundle.py)
   const MACHINE = ["wifi", "audio"];
+  // the settings, and the capability of the device's profile each needs (SETTING_CAPABILITIES in bundle.py)
+  const SETTINGS = [
+    { key: "wifi", capability: "wifi", label: "Wi-Fi" },
+    { key: "audio", capability: "audio", label: "Audio" },
+    { key: "usbmuxd", capability: "usbmux", label: "Access with libimobiledevice" },
+  ];
 
   // svelte-ignore state_referenced_locally
   let name = $state(device.name);
@@ -17,10 +23,21 @@
   let error = $state(null);
   let ask = $state(null);            // the "discards the suspended state" question
   let saving = $state(false);
+  let type = $state(null);           // the device's profile, from device_types
   let fileInput;
+
+  // svelte-ignore state_referenced_locally
+  call("device_types").then((result) => {
+    type = result.device_types.find((t) => t.product === device.product) ?? null;
+  }).catch((e) => (error = e.message || String(e)));
 
   const running = $derived(RUNNING.includes(device.state));
   const machineChanged = $derived(MACHINE.some((k) => settings[k] !== device.settings[k]));
+  const shown = $derived(type ? SETTINGS.filter((s) => type.capabilities.includes(s.capability)) : []);
+  // the shown settings that change the emulator's command line, for the notes: "Wi-Fi or audio"
+  const machineNames = $derived(
+    shown.filter((s) => MACHINE.includes(s.key)).map((s, i) => (i ? s.label.toLowerCase() : s.label)).join(" or ")
+  );
   const fileManager = navigator.platform.startsWith("Mac") ? "Finder" : "File Manager";
 
   // the thumbnail as it was when the dialog opened
@@ -117,19 +134,21 @@
         <div class="group">
           <span class="label">Settings</span>
           <div class="checks">
-            <label class="check"><input type="checkbox" bind:checked={settings.wifi} disabled={running} /> Wi-Fi</label>
-            <label class="check"><input type="checkbox" bind:checked={settings.audio} disabled={running} /> Audio</label>
-            <label class="check"><input type="checkbox" bind:checked={settings.usbmuxd} /> Access with libimobiledevice</label>
-            {#if running}
-              <p class="note">Power the device off to change Wi-Fi or audio.</p>
+            {#each shown as s (s.key)}
+              <label class="check">
+                <input type="checkbox" bind:checked={settings[s.key]} disabled={running && MACHINE.includes(s.key)} /> {s.label}
+              </label>
+            {/each}
+            {#if running && machineNames}
+              <p class="note">Power the device off to change {machineNames}.</p>
             {:else if machineChanged && device.state === "suspended"}
-              <p class="note">Changing Wi-Fi or audio discards the device's suspended state.</p>
+              <p class="note">Changing {machineNames} discards the device's suspended state.</p>
             {/if}
           </div>
         </div>
 
         <dl>
-          <dt>Device</dt><dd>iPod touch (2nd generation)</dd>
+          <dt>Device</dt><dd>{type?.name ?? device.product ?? "–"}{type && type.support !== "supported" ? " (experimental)" : ""}</dd>
           <dt>Version</dt><dd>{osName(device.version)} ({device.build})</dd>
           <dt>Activation</dt><dd>{device.activation === "device_certificate" ? "Device certificate from Apple" : "Skeuo"}</dd>
           <dt>Serial</dt><dd class="mono">{device.serial_number || "–"}</dd>
@@ -154,7 +173,7 @@
   <div class="backdrop">
     <div class="dialog small" role="alertdialog">
       <h2>Discard the suspended state?</h2>
-      <p class="muted">“{device.name}” is suspended. Changing Wi-Fi or audio means it can't resume: it boots fresh next time, and apps lose what they didn't save.</p>
+      <p class="muted">“{device.name}” is suspended. Changing {machineNames} means it can't resume: it boots fresh next time, and apps lose what they didn't save.</p>
       <div class="buttons">
         <button onclick={() => (ask = null)}>Cancel</button>
         <button class="primary" onclick={() => { ask = null; save(true); }}>Discard and Save</button>

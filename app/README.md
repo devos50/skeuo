@@ -29,8 +29,8 @@ emulator submodule's build directory). A release build runs the Python, pipeline
   suspended device asks first, since it discards the saved state.
 - **Settings** (the gear): the library folder (changing it restarts the daemon on the new one; not while a device
   runs), the firmware cache (download, resume or delete each version's IPSW), and an optional boot ROM. Choosing a
-  copy of the S5L8720 SecureROM (iBoot-240.4, checked by SHA-256, kept as `bootrom.bin` in the data directory) makes
-  devices boot through it, to compare with the real thing; Remove goes back to booting directly. Both restart the
+  copy of the S5L8720 SecureROM (iBoot-240.4, checked by size and SHA-256 against the device profiles'
+  bootroms from `device_types`, kept as `bootrom.bin` in the data directory) makes devices with that chip boot through it, to compare with the real thing; Remove goes back to booting directly. Both restart the
   daemon, so not while a device runs. The bootrom is Apple's code, so it is never part of the repository or the app.
 - **New device:** the "+" card or toolbar button opens a dialog: device type (only the iPod touch 2G for now),
   name, version (the IPSW comes from Apple's servers if it isn't cached; 3.0 needs a local IPSW, as does any

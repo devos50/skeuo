@@ -14,11 +14,6 @@ use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilde
 
 use daemon::{Daemon, RpcError};
 
-/// The S5L8720 SecureROM (iBoot-240.4). The emulator doesn't need it (it starts the firmware itself), but a user who
-/// has a copy can boot through it instead, to compare with the real thing. Apple's code, so never shipped.
-const BOOTROM_SHA256: &str = "55f4d8ea2791ba51dd89934168f38f0fb21ce8762ff614c1e742407c0d3ca054";
-const BOOTROM_SIZE: usize = 65536;
-
 #[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     /// The directory with the device bundles.
@@ -170,10 +165,12 @@ async fn restart_daemon(app: &AppHandle, state: &State<'_, App>, change: impl Fn
 }
 
 /// Checks the bootrom the user picked and keeps a copy in the app's data directory; devices boot through it from now
-/// on.
+/// on. The emulator doesn't need it (it starts the firmware itself), but a user who has a copy can boot through it
+/// instead, to compare with the real thing. Apple's code, so never shipped.
 #[tauri::command]
 async fn import_bootrom(app: AppHandle, state: State<'_, App>, bytes: Vec<u8>) -> Result<Status, String> {
-    check_bootrom(&bytes)?;
+    let types = state.daemon().map_err(|e| e.message)?.call("device_types", json!({})).await.map_err(|e| e.message)?;
+    check_bootrom(&bytes, &types["device_types"])?;
     restart_daemon(&app, &state, || store_bootrom(&state, &bytes)).await?;
     Ok(status(state))
 }
@@ -189,16 +186,28 @@ async fn remove_bootrom(app: AppHandle, state: State<'_, App>) -> Result<Status,
     Ok(status(state))
 }
 
-fn check_bootrom(bytes: &[u8]) -> Result<(), String> {
-    if bytes.len() != BOOTROM_SIZE {
-        return Err(format!(
-            "This file is {} bytes; the S5L8720 bootrom is {BOOTROM_SIZE} bytes.",
-            bytes.len()
-        ));
+/// Checks bytes against the bootroms of the device profiles (the pipeline's device_types).
+fn check_bootrom(bytes: &[u8], device_types: &Value) -> Result<(), String> {
+    let mut bootroms: Vec<&Value> = Vec::new();
+    for bootrom in device_types.as_array().into_iter().flatten().map(|t| &t["bootrom"]) {
+        if bootrom.is_object() && !bootroms.iter().any(|b| b["soc"] == bootrom["soc"]) {
+            bootroms.push(bootrom);
+        }
+    }
+    let name = |b: &Value| format!("the {} bootrom", b["soc"].as_str().unwrap_or("?"));
+    let sized: Vec<&Value> = bootroms.iter().copied().filter(|b| b["size"].as_u64() == Some(bytes.len() as u64)).collect();
+    if sized.is_empty() {
+        let sizes: Vec<String> =
+            bootroms.iter().map(|b| format!("{} is {} bytes", name(b), b["size"].as_u64().unwrap_or(0))).collect();
+        return Err(format!("This file is {} bytes; {}.", bytes.len(), sizes.join(", ")));
     }
     let digest: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
-    if digest != BOOTROM_SHA256 {
-        return Err("This isn't the S5L8720 bootrom (SecureROM iBoot-240.4): its SHA-256 differs.".into());
+    if !sized.iter().any(|b| b["sha256"].as_str() == Some(digest.as_str())) {
+        let names: Vec<String> = sized
+            .iter()
+            .map(|b| format!("{} (SecureROM {})", name(b), b["version"].as_str().unwrap_or("?")))
+            .collect();
+        return Err(format!("This isn't {}: its SHA-256 differs.", names.join(" or ")));
     }
     Ok(())
 }

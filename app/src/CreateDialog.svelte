@@ -17,6 +17,13 @@
   let error = $state(null);
 
   const type = $derived(types.find((t) => t.product === product));
+  // the settings, and the capability of the device's profile each needs (SETTING_CAPABILITIES in bundle.py)
+  const SETTINGS = [
+    { key: "wifi", capability: "wifi", label: "Wi-Fi" },
+    { key: "audio", capability: "audio", label: "Audio" },
+    { key: "usbmuxd", capability: "usbmux", label: "Access with libimobiledevice" },
+  ];
+  const shown = $derived(type ? SETTINGS.filter((s) => type.capabilities.includes(s.capability)) : []);
   // newest first
   const versions = $derived(type ? [...type.versions].reverse() : []);
   const selected = $derived(versions.find((v) => v.version === version));
@@ -48,7 +55,9 @@
   function submit(e) {
     e.preventDefault();
     if (!ready) return;
-    const params = { product, name: name.trim() || defaultName, version, settings: { ...settings } };
+    // a setting the device can't have is off
+    const chosen = Object.fromEntries(SETTINGS.map((s) => [s.key, settings[s.key] && shown.includes(s)]));
+    const params = { product, name: name.trim() || defaultName, version, settings: chosen };
     if (ipsw) params.ipsw = ipsw;
     if (activation === "certificate") params.device_certificate = certificate;
     if (norImages) params.nor_images = norImages;
@@ -69,7 +78,7 @@
       <span>Device</span>
       <select bind:value={product}>
         {#each types as t}
-          <option value={t.product}>{t.name}</option>
+          <option value={t.product}>{t.name}{t.support !== "supported" ? " (experimental)" : ""}</option>
         {/each}
       </select>
     </label>
@@ -119,9 +128,9 @@
     <details bind:open={advanced}>
       <summary>Advanced</summary>
       <div class="advanced">
-        <label class="check"><input type="checkbox" bind:checked={settings.wifi} /> Wi-Fi</label>
-        <label class="check"><input type="checkbox" bind:checked={settings.audio} /> Audio</label>
-        <label class="check"><input type="checkbox" bind:checked={settings.usbmuxd} /> Access with libimobiledevice</label>
+        {#each shown as s (s.key)}
+          <label class="check"><input type="checkbox" bind:checked={settings[s.key]} /> {s.label}</label>
+        {/each}
         <div class="file">
           <button type="button" onclick={async () => (ipsw = (await pick("ipsw")) ?? ipsw)}>Use an IPSW File…</button>
           {#if ipsw}<span class="muted">{base(ipsw)}</span>{/if}

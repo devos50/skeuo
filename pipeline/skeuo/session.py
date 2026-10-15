@@ -66,8 +66,8 @@ class Session:
             clock = None
         settings = bundle.settings
         self.emu = emu = Emulator(
-            self.qemu, self.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
-            display=self.display, vnc=self.vnc,
+            self.qemu, bundle.profile, self.bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs,
+            bundle.nand_epoch, display=self.display, vnc=self.vnc,
             wifi_mac=bundle.info["identity"]["wifi_mac"] if settings["wifi"] else None, audio=settings["audio"],
             boot_args=bundle.boot_args, extra_args=self.extra_args, incoming=bool(resume), clock=clock)
         self.started = time.time()
@@ -96,6 +96,9 @@ class Session:
                 emu.stop()
                 bundle.fold(log=log)
                 return "crashed"
+            if not power_off and "suspend" not in bundle.profile.capabilities:
+                log("the %s can't suspend; powering off" % bundle.profile.name)
+                power_off = True
             if not power_off:
                 log("suspending")
                 try:

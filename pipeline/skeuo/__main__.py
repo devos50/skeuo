@@ -7,8 +7,8 @@ Skeuo: classic iPhone OS in an emulator.
   python3 -m skeuo download <version>         download a restore IPSW from Apple into the cache
   python3 -m skeuo serve                      the daemon for the Skeuo app: JSON lines over stdio (see serve.py)
 
-The emulator starts the firmware itself; Apple's S5L8720 bootrom is optional (--bootrom or SKEUO_BOOTROM), for
-comparing with the real boot path. QEMU is found through --qemu, SKEUO_QEMU, or the emulator submodule's build
+The emulator starts the firmware itself; the chip's bootrom is optional (--bootrom or SKEUO_BOOTROM), for comparing
+with the real boot path. What differs between the devices Skeuo emulates is in their profiles (skeuo/devices/). QEMU is found through --qemu, SKEUO_QEMU, or the emulator submodule's build
 directory.
 """
 import argparse
@@ -19,6 +19,7 @@ import sys
 import tempfile
 
 from .activation import ActivationError, load_device_certificate
+from . import devices
 from . import download as downloads
 from .bundle import Bundle, BundleError
 from .emulator import EmulatorError
@@ -37,12 +38,20 @@ def log(text):
     print(text, flush=True)
 
 
+def bootrom_names():
+    return ", ".join(sorted({"%s %s" % (p.soc, p.bootrom.version) for p in devices.profiles()}))
+
+
+def versions():
+    return "; ".join("%s: %s" % (p.product, ", ".join(p.firmwares)) for p in devices.profiles())
+
+
 def add_emulator_arguments(parser):
     parser.add_argument("--qemu", default=os.environ.get("SKEUO_QEMU", DEFAULT_QEMU),
-                        help="qemu-system-arm with the iPod Touch machine (default: %(default)s)")
+                        help="qemu-system-arm with the device's machine (default: %(default)s)")
     parser.add_argument("--bootrom", default=os.environ.get("SKEUO_BOOTROM"),
-                        help="optional S5L8720 bootrom dump to boot through, instead of starting the firmware "
-                             "directly (default: $SKEUO_BOOTROM)")
+                        help="optional dump of the device's bootrom (%s) to boot through, instead of starting the "
+                             "firmware directly (default: $SKEUO_BOOTROM)" % bootrom_names())
 
 
 def cmd_restore(parser, args):
@@ -109,10 +118,11 @@ def cmd_download(parser, args):
                     where += " (%d MB downloaded)" % (fw["partial"] >> 20)
             else:
                 where = "not on Apple's servers; restore from a local IPSW"
-            log("%-6s %-6s %s" % (fw["version"], fw["build"], where))
+            log("%-8s %-6s %-6s %s" % (fw["product"], fw["version"], fw["build"], where))
         return 0
     if not args.version:
-        parser.error("name a version (%s), or pass --list" % ", ".join(downloads.FIRMWARES))
+        parser.error("name a version (%s), or pass --list" % versions())
+    profile = devices.for_version(args.version, args.product)
     last = [-1]
 
     def progress(done, total):
@@ -122,7 +132,7 @@ def cmd_download(parser, args):
             print("\r%3d%%  %d of %d MB" % (percent, done >> 20, total >> 20), end="", flush=True)
 
     try:
-        path = downloads.download(args.version, args.cache, progress=progress)
+        path = downloads.download(profile, args.version, args.cache, progress=progress)
     finally:
         if last[0] >= 0:
             print()
@@ -173,7 +183,8 @@ def main():
     p.set_defaults(func=cmd_power_off)
 
     p = sub.add_parser("download", help="download a restore IPSW from Apple")
-    p.add_argument("version", nargs="?", help=", ".join(downloads.FIRMWARES))
+    p.add_argument("version", nargs="?", help=versions())
+    p.add_argument("--product", help="the device the firmware is for, when several have that version")
     p.add_argument("--list", action="store_true", help="list the versions and what is in the cache")
     p.add_argument("--cache", default=downloads.default_cache(), help="the IPSW cache (default: %(default)s)")
     p.set_defaults(func=cmd_download)
@@ -191,7 +202,7 @@ def main():
     args = parser.parse_args()
     try:
         return args.func(parser, args)
-    except (ActivationError, BundleError, EmulatorError, HFSError, IPSWError, NANDError,
+    except (ActivationError, BundleError, devices.DeviceError, EmulatorError, HFSError, IPSWError, NANDError,
             downloads.DownloadError) as e:
         print("skeuo: %s" % e, file=sys.stderr)
         return 1

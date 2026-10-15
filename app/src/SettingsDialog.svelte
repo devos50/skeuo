@@ -8,6 +8,7 @@
   let error = $state(null);
   let notice = $state(null);
   let busy = $state(false);
+  let bootroms = $state([]);         // the device profiles' bootroms, one per chip
   let bootromInput;
 
   const fileManager = navigator.platform.startsWith("Mac") ? "Finder" : "File Manager";
@@ -22,6 +23,13 @@
     }
   }
   loadIPSWs();
+
+  call("device_types").then((result) => {
+    const seen = new Map();
+    for (const t of result.device_types) if (t.bootrom && !seen.has(t.bootrom.soc)) seen.set(t.bootrom.soc, t.bootrom);
+    bootroms = [...seen.values()];
+  }).catch((e) => (error = e.message || String(e)));
+  const bootromNames = $derived(bootroms.map((b) => `${b.soc} SecureROM (${b.version})`).join(" or ") || "the SecureROM");
 
   async function changeLibrary() {
     error = null;
@@ -107,7 +115,7 @@
     <section>
       <h3>Boot ROM <span class="muted small">(optional)</span></h3>
       <p class="muted">
-        Devices start their firmware directly. If you have a copy of the S5L8720 SecureROM (iBoot-240.4), they can start
+        Devices start their firmware directly. If you have a copy of the {bootromNames}, they can start
         from it instead, like the real device. It takes effect the next time a device boots.
       </p>
       <div class="row">

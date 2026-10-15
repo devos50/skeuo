@@ -115,12 +115,15 @@ class QMP:
 
 
 class Emulator:
-    """bootrom: an S5L8720 bootrom dump, or None: the emulator then starts LLB from the NOR (or boot_image) itself.
+    """profile: the device's profile (devices/), which names the machine.
+    bootrom: a dump of the profile's bootrom, or None: the emulator then starts LLB from the NOR (or boot_image)
+    itself.
     dfu: hold the force-DFU GPIO so the bootrom enters DFU mode (needs the bootrom).
     boot_image: an IMG3 image to start instead of LLB from the NOR, without a bootrom: iBSS for a restore.
     display: show the QEMU window instead of running headless.
     vnc: serve the screen and take input over VNC on 127.0.0.1 instead, also as a WebSocket, both on free ports
     (vnc_port, websocket_port). The app draws the screen itself this way.
+    wifi_mac: the Wi-Fi chip's address, for a device with the "wifi" capability; None leaves the Wi-Fi off.
     audio: play the device's audio on the host; False gives it a silent audio backend.
     boot_args: the kernel arguments iBoot passes on a normal boot, None for the emulator's default.
     incoming: wait for resume() to load a saved state instead of booting.
@@ -129,7 +132,7 @@ class Emulator:
     fingerprint is what a saved state belongs to: QEMU's digest and its arguments without the host-side details
     (file paths, ports, the window or VNC server, the clock), which may differ between saving and loading."""
 
-    def __init__(self, qemu, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, boot_image=None,
+    def __init__(self, qemu, profile, bootrom, disk, overlay, nor, logdir, nand_epoch, dfu=False, boot_image=None,
                  display=False, vnc=False, wifi_mac=None, audio=True, boot_args=None, extra_args=(), incoming=False,
                  clock=None):
         if not os.path.exists(qemu):
@@ -138,14 +141,16 @@ class Emulator:
             raise EmulatorError("bootrom not found at %s" % bootrom)
         if dfu and not bootrom:
             raise EmulatorError("DFU mode needs the bootrom")
+        if wifi_mac and "wifi" not in profile.capabilities:
+            raise EmulatorError("the %s has no Wi-Fi" % profile.name)
         self.port = free_port()
         self.qmp_port = free_port()
         self.vnc_port = self.websocket_port = None
         self.serial_log = os.path.join(logdir, "serial.log")
 
         def command(host):
-            machine = "iPod-Touch,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
-                host["disk"], host["overlay"], nand_epoch, host["nor"])
+            machine = "%s,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
+                profile.machine, host["disk"], host["overlay"], nand_epoch, host["nor"])
             # only used at a reset, so it's not part of the fingerprint: a state saved with it loads without it
             if host.get("bootrom"):
                 machine += ",bootrom=" + host["bootrom"]
@@ -164,8 +169,8 @@ class Emulator:
                 "-action", "shutdown=pause", "-global", "migration.store-global-state=off",
             ]
             if wifi_mac:
-                # the BCM4325 model reports the NIC's address as its own
-                cmd += ["-nic", "user,model=bcm4325,mac=%s" % wifi_mac.lower()]
+                # the Wi-Fi chip's model reports the NIC's address as its own
+                cmd += ["-nic", "user,model=%s,mac=%s" % (profile.wifi_nic, wifi_mac.lower())]
             if not audio:
                 cmd += ["-audio", "none"]
             return cmd + list(extra_args)

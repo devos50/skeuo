@@ -1,16 +1,17 @@
 """
-The NAND of the iPod Touch 2G: 4 CEs of Samsung NAND, laid out by the VSVFL/FTL of the iPhone OS 2.x kernel.
+A device's NAND, laid out by the VSVFL/FTL of the iPhone OS kernel. The geometry (page and spare sizes, CEs, blocks,
+planes) is the device profile's NandLayout (devices/), passed to every function here as layout.
 
 A bundle stores the disk that the FTL presents, not the NAND itself: disk.img, a sparse raw disk image with logical
-page n at offset n * BYTES_PER_PAGE (the MBR at page 0, partition 1 = system, partition 2 = data). macOS mounts its
+page n at offset n * bytes_per_page (the MBR at page 0, partition 1 = system, partition 2 = data). macOS mounts its
 partitions with `hdiutil attach -imagekey diskimage-class=CRawDiskImage`.
 
-The emulator (nand-disk/nand-overlay of the iPod-Touch machine, hw/arm/ipod_touch_nand.c) presents disk.img as a
-freshly formatted NAND with every data block in place, and keeps the pages that iOS programs or erases in an overlay
-directory, per CE:
+The emulator (nand-disk/nand-overlay of the machine, hw/arm/ipod_touch_nand.c for the iPod touch 2G) presents
+disk.img as a freshly formatted NAND with every data block in place, and keeps the pages that iOS programs or erases
+in an overlay directory, per CE:
 
-  cs<ce>.data    sparse, page p at offset p * BYTES_PER_PAGE
-  cs<ce>.spare   sparse, the spare area of page p at offset p * BYTES_PER_SPARE
+  cs<ce>.data    sparse, page p at offset p * bytes_per_page
+  cs<ce>.spare   sparse, the spare area of page p at offset p * bytes_per_spare
   cs<ce>.state   one byte per page: 0 = the page of the formatted NAND, 1 = programmed (in .data/.spare), 2 = erased
 
 fold() writes the newest copy of every logical page in the overlay into disk.img and deletes the overlay. The FTL's
@@ -24,22 +25,9 @@ import os
 import shutil
 import struct
 
-BYTES_PER_PAGE = 4096
-BYTES_PER_SPARE = 64
-META_SIZE = 12  # the part of the spare area that the FTL/VFL sees
-PAGES_PER_BLOCK = 128
-NUM_CE = 4
-BLOCKS_PER_CE = 4096
-PAGES_PER_CE = PAGES_PER_BLOCK * BLOCKS_PER_CE
-NUM_BANKS = 8  # the two planes of each CE are exposed as two banks
-BLOCKS_PER_BANK = BLOCKS_PER_CE // 2
-PAGES_PER_SUBLOCK = PAGES_PER_BLOCK * NUM_BANKS
-
 # VSVFL gives 976 out of every 1024 blocks to the user super blocks; the FTL keeps 23 of those for itself
-VFL_NUM_OF_SUBLKS = (0x3d0 * BLOCKS_PER_BANK) // 1024
+VFL_USER_BLOCKS_PER_1024 = 0x3d0
 FTL_DATA_VBN_START = 3 + 20
-FTL_NUM_OF_LBNS = VFL_NUM_OF_SUBLKS - FTL_DATA_VBN_START
-DISK_NUM_OF_LBAS = FTL_NUM_OF_LBNS * PAGES_PER_SUBLOCK
 FTL_SPARE_TYPES_DATA = (0x40, 0x41)
 
 OVERLAY_PROGRAMMED = 1
@@ -53,12 +41,23 @@ class NANDError(Exception):
     pass
 
 
-def virtual_page(ce, ppn):
+def check_layout(layout):
+    if layout.kind != "vsvfl":
+        raise NANDError("Skeuo can't read a %s NAND yet" % layout.kind)
+
+
+def disk_pages(layout):
+    """The number of logical pages that the FTL presents."""
+    vfl_sublocks = (VFL_USER_BLOCKS_PER_1024 * layout.blocks_per_bank) // 1024
+    return (vfl_sublocks - FTL_DATA_VBN_START) * layout.pages_per_sublock
+
+
+def virtual_page(layout, ce, ppn):
     """The virtual page that VSVFL keeps at physical page ppn of a CE (for the data blocks, which are never
     remapped)."""
-    chip_block, page_in_block = divmod(ppn, PAGES_PER_BLOCK)
-    vbn, plane = divmod(chip_block, 2)
-    return vbn * PAGES_PER_SUBLOCK + page_in_block * NUM_BANKS + ce + NUM_CE * plane
+    chip_block, page_in_block = divmod(ppn, layout.pages_per_block)
+    vbn, plane = divmod(chip_block, layout.planes_per_ce)
+    return vbn * layout.pages_per_sublock + page_in_block * layout.num_banks + ce + layout.num_ce * plane
 
 
 def data_regions(f, size):
@@ -92,27 +91,29 @@ def copy_regions(src, dst, src_offset, dst_offset, length):
                 start += chunk
 
 
-def newest_pages(pages):
+def newest_pages(layout, pages):
     """pages: iterable of (ce, physical page, meta, data location). Returns {logical page: data location} for the
     newest copy of every logical page. The FTL stores the logical page of each data page in its spare area with the
     write age of its block; of several copies the newest is the one in the youngest block, and within a block the
     one written last."""
+    check_layout(layout)
+    num_lbas = disk_pages(layout)
     newest = {}
     for ce, ppn, meta, location in pages:
-        if len(meta) < META_SIZE or meta[9] not in FTL_SPARE_TYPES_DATA:
+        if len(meta) < layout.meta_size or meta[9] not in FTL_SPARE_TYPES_DATA:
             continue
         lpn, age = struct.unpack_from("<II", meta)
-        if lpn >= DISK_NUM_OF_LBAS:
+        if lpn >= num_lbas:
             continue
-        order = (age, virtual_page(ce, ppn))
+        order = (age, virtual_page(layout, ce, ppn))
         if lpn not in newest or order > newest[lpn][0]:
             newest[lpn] = (order, location)
     return {lpn: location for lpn, (order, location) in newest.items()}
 
 
-def page_files(nand):
+def page_files(layout, nand):
     """The pages of a NAND in the one-file-per-page format, with (path, offset) of their data."""
-    for ce in range(NUM_CE):
+    for ce in range(layout.num_ce):
         directory = os.path.join(nand, "cs%d" % ce)
         if not os.path.isdir(directory):
             continue
@@ -120,14 +121,14 @@ def page_files(nand):
             if not entry.name.endswith(".page"):
                 continue
             with open(entry.path, "rb") as f:
-                f.seek(BYTES_PER_PAGE)
-                meta = f.read(META_SIZE)
+                f.seek(layout.bytes_per_page)
+                meta = f.read(layout.meta_size)
             yield ce, int(entry.name[:-5]), meta, (entry.path, 0)
 
 
-def overlay_pages(overlay):
+def overlay_pages(layout, overlay):
     """The programmed pages of an overlay, with (path, offset) of their data."""
-    for ce in range(NUM_CE):
+    for ce in range(layout.num_ce):
         base = os.path.join(overlay, "cs%d." % ce)
         try:
             with open(base + "state", "rb") as f:
@@ -138,15 +139,17 @@ def overlay_pages(overlay):
             continue
         ppn = state.find(OVERLAY_PROGRAMMED)
         while ppn != -1:
-            yield ce, ppn, spare[ppn * BYTES_PER_SPARE:ppn * BYTES_PER_SPARE + META_SIZE], \
-                (base + "data", ppn * BYTES_PER_PAGE)
+            spare_offset = ppn * layout.bytes_per_spare
+            yield ce, ppn, spare[spare_offset:spare_offset + layout.meta_size], \
+                (base + "data", ppn * layout.bytes_per_page)
             ppn = state.find(OVERLAY_PROGRAMMED, ppn + 1)
 
 
-def write_pages(pages, disk):
+def write_pages(layout, pages, disk):
     """Writes {logical page: (path, offset)} into the disk image. Pages of zeroes that would land on zeroes (or a
     hole) are skipped, so that the image stays sparse."""
-    zero_page = bytes(BYTES_PER_PAGE)
+    page_size = layout.bytes_per_page
+    zero_page = bytes(page_size)
     files = {}
     try:
         with open(disk, "r+b" if os.path.exists(disk) else "w+b") as out:
@@ -161,11 +164,11 @@ def write_pages(pages, disk):
                     files[path] = open(path, "rb")
                 src = files[path]
                 src.seek(offset)
-                data = src.read(BYTES_PER_PAGE).ljust(BYTES_PER_PAGE, b"\0")
-                out.seek(lpn * BYTES_PER_PAGE)
-                if data == zero_page and (lpn * BYTES_PER_PAGE >= size or out.read(BYTES_PER_PAGE) == zero_page):
+                data = src.read(page_size).ljust(page_size, b"\0")
+                out.seek(lpn * page_size)
+                if data == zero_page and (lpn * page_size >= size or out.read(page_size) == zero_page):
                     continue
-                out.seek(lpn * BYTES_PER_PAGE)
+                out.seek(lpn * page_size)
                 out.write(data)
             out.flush()
             os.fsync(out.fileno())
@@ -174,30 +177,31 @@ def write_pages(pages, disk):
             f.close()
 
 
-def extract(nand, disk):
+def extract(layout, nand, disk):
     """Writes the disk that the FTL of a NAND in the one-file-per-page format presents to a new sparse disk
     image."""
-    pages = newest_pages(page_files(nand))
+    pages = newest_pages(layout, page_files(layout, nand))
     if not pages:
         raise NANDError("no data pages in %s" % nand)
     with open(disk, "wb") as f:
-        f.truncate((max(pages) + 1) * BYTES_PER_PAGE)
-    write_pages(pages, disk)
+        f.truncate((max(pages) + 1) * layout.bytes_per_page)
+    write_pages(layout, pages, disk)
     return len(pages)
 
 
-def fold(overlay, disk):
+def fold(layout, overlay, disk):
     """Writes the newest copy of every logical page in the overlay into the disk image and deletes the overlay.
     Folding again after an interruption gives the same result."""
-    pages = newest_pages(overlay_pages(overlay))
-    write_pages(pages, disk)
+    pages = newest_pages(layout, overlay_pages(layout, overlay))
+    write_pages(layout, pages, disk)
     shutil.rmtree(overlay)
     return len(pages)
 
 
-def partitions(disk):
+def partitions(layout, disk):
     """Returns [(number, first page, pages)] of the partitions on the disk: those of the MBR at logical page 0, or, if
-    that is a protective MBR (iOS 4 on), those of the GPT behind it. Pages are the disk's 4 KiB logical blocks."""
+    that is a protective MBR (iOS 4 on), those of the GPT behind it. Pages are the disk's logical blocks, one NAND
+    page each."""
     with open(disk, "rb") as f:
         mbr = f.read(512)
         if mbr[510:512] != b"\x55\xaa":
@@ -211,12 +215,12 @@ def partitions(disk):
         if [p[3] for p in partitions] != [MBR_TYPE_GPT_PROTECTIVE]:
             return [p[:3] for p in partitions]
 
-        f.seek(BYTES_PER_PAGE)
+        f.seek(layout.bytes_per_page)
         header = f.read(92)
         if header[:8] != b"EFI PART":
             raise NANDError("protective MBR without a GPT on %s" % disk)
         entries_lba, count, entry_size = struct.unpack_from("<QII", header, 0x48)
-        f.seek(entries_lba * BYTES_PER_PAGE)
+        f.seek(entries_lba * layout.bytes_per_page)
         table = f.read(count * entry_size)
     partitions = []
     for i in range(count):

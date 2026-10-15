@@ -47,12 +47,9 @@ FACTORY_ACTIVATION_CERT = "/System/Library/Lockdown/FactoryActivation.pem"
 LOCKDOWND = "/usr/libexec/lockdownd"
 # the kernel arguments that turn off code signing enforcement (AMFI), for the patched lockdownd
 BOOT_ARGS = "amfi=0xff cs_enforcement_disable=1"
-# Per build, where verify_activation_record calls the device certificate check (SecTrustEvaluate under a policy that
-# pins Apple's root): (file offset, the bl instruction there). It becomes "mov r0, #0", i.e. verified.
-LOCKDOWND_DEVICE_CERTIFICATE_CHECKS = {
-    "7A341": (0xcd8c, bytes.fromhex("cfeaffeb")),  # iPhone OS 3.0, bl 0x88d0 at 0xdd8c
-    "8A293": (0xe354, bytes.fromhex("c7eaffeb")),  # iOS 4.0, bl 0x9e78 at 0xf354
-}
+# Where verify_activation_record calls the device certificate check (SecTrustEvaluate under a policy that pins Apple's
+# root) is in the firmware's entry of the device profile (lockdownd_certificate_check). It becomes "mov r0, #0", i.e.
+# verified.
 MOV_R0_0 = bytes.fromhex("0000a0e3")
 RECORD = "/root/Library/Lockdown/activation_records/pod_record.plist"  # on the data partition (/private/var)
 DATA_ARK = "/root/Library/Lockdown/data_ark.plist"
@@ -131,15 +128,16 @@ def system_files(apple_device_certificate=False):
     return files
 
 
-def patch_lockdownd(build, lockdownd):
+def patch_lockdownd(firmware, lockdownd):
     """lockdownd with the device certificate check of verify_activation_record taken out, or None if there is no patch
-    for the build (before 3.0 Skeuo's own device certificate verifies)."""
-    if build not in LOCKDOWND_DEVICE_CERTIFICATE_CHECKS:
+    for the firmware (before 3.0 Skeuo's own device certificate verifies). firmware: the device profile's entry."""
+    if not firmware.get("lockdownd_certificate_check"):
         return None
-    offset, call = LOCKDOWND_DEVICE_CERTIFICATE_CHECKS[build]
+    offset, call = firmware["lockdownd_certificate_check"]
+    call = bytes.fromhex(call)
     if lockdownd[offset:offset + len(call)] != call:
         raise ActivationError("lockdownd of %s doesn't have the expected device certificate check at 0x%x"
-                              % (build, offset))
+                              % (firmware["build"], offset))
     return lockdownd[:offset] + MOV_R0_0 + lockdownd[offset + len(call):]
 
 

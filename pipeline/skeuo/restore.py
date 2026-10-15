@@ -110,8 +110,11 @@ def run_restored(emu, ipsw, log):
 def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certificate=None, name=None, settings=None,
             log=print):
     """Creates a device bundle at bundle_path, restored with ipsw (an IPSW object). device_certificate: a PEM device
-    certificate from Apple to activate with (see activation.py). name and settings: see bundle.py. bootrom: an
-    S5L8720 bootrom dump to start iBSS through its DFU mode, None to let the emulator start it."""
+    certificate from Apple to activate with (see activation.py). name and settings: see bundle.py. bootrom: a dump
+    of the device profile's bootrom to start iBSS through its DFU mode, None to let the emulator start it."""
+    profile = ipsw.profile
+    if profile.restore != "restored":
+        raise EmulatorError("Skeuo can't restore the %s yet (%s)" % (profile.name, profile.restore))
     device = identity.generate()
     bundle = Bundle.create(bundle_path, ipsw, device, name=name, settings=settings)
     if device_certificate:
@@ -133,8 +136,9 @@ def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certifi
             with open(ibss, "wb") as f:
                 f.write(ipsw.dfu_image("iBSS"))
         try:
-            emu = Emulator(qemu, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs, bundle.nand_epoch,
-                           dfu=bool(bootrom), boot_image=ibss, wifi_mac=device["wifi_mac"])
+            emu = Emulator(qemu, profile, bootrom, bundle.disk, bundle.overlay, bundle.nor, bundle.logs,
+                           bundle.nand_epoch, dfu=bool(bootrom), boot_image=ibss,
+                           wifi_mac=device["wifi_mac"] if "wifi" in profile.capabilities else None)
             try:
                 link = emu.connect()
                 try:
@@ -154,7 +158,7 @@ def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certifi
 
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
         try:
-            prepare.prepare(bundle.disk, work, device, ipsw.product, ipsw.build, lockdown=lockdown,
+            prepare.prepare(bundle.disk, work, device, profile, ipsw.build, lockdown=lockdown,
                             device_certificate=device_certificate, log=log)
         finally:
             shutil.rmtree(work, ignore_errors=True)

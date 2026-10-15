@@ -37,8 +37,7 @@ try:
 except ImportError:  # Windows
     fcntl = None
 
-from . import activation, nand
-from .ipsw import NAND_EPOCHS
+from . import activation, devices, nand
 
 FORMAT_VERSION = 2
 
@@ -50,6 +49,23 @@ SETTINGS = {
     "usbmuxd": True,
 }
 MACHINE_SETTINGS = ("wifi", "audio")
+# The capability of the device profile that each setting needs; a device without it has the setting off.
+SETTING_CAPABILITIES = {"wifi": "wifi", "audio": "audio", "usbmuxd": "usbmux"}
+
+
+def check_settings(profile, changes):
+    """Refuses settings that don't exist, or that turn on something the device can't do."""
+    unknown = set(changes) - set(SETTINGS)
+    if unknown:
+        raise BundleError("unknown settings: %s" % ", ".join(sorted(unknown)))
+    missing = [key for key, value in changes.items()
+               if value and SETTING_CAPABILITIES[key] not in profile.capabilities]
+    if missing:
+        raise BundleError("the %s has no %s" % (profile.name, ", ".join(sorted(missing))))
+
+
+def default_settings(profile):
+    return {key: value and SETTING_CAPABILITIES[key] in profile.capabilities for key, value in SETTINGS.items()}
 
 
 class BundleError(Exception):
@@ -77,8 +93,18 @@ class Bundle:
         return self.info.get("name") or default_name(self.info["firmware"]["version"])
 
     @property
+    def profile(self):
+        """The device's profile (devices/), by its product."""
+        try:
+            return devices.get(self.info.get("product"))
+        except devices.DeviceError as e:
+            raise BundleError("%s: %s" % (self.path, e))
+
+    @property
     def settings(self):
-        return dict(SETTINGS, **self.info.get("settings", {}))
+        settings = dict(SETTINGS, **self.info.get("settings", {}))
+        capabilities = self.profile.capabilities
+        return {key: value and SETTING_CAPABILITIES[key] in capabilities for key, value in settings.items()}
 
     def rename(self, name):
         name = name.strip()
@@ -89,9 +115,7 @@ class Bundle:
 
     def update_settings(self, changes):
         """Changes settings; returns whether one of them changes the emulator's command line."""
-        unknown = set(changes) - set(SETTINGS)
-        if unknown:
-            raise BundleError("unknown settings: %s" % ", ".join(sorted(unknown)))
+        check_settings(self.profile, changes)
         settings = self.settings
         machine = any(settings[key] != bool(value) for key, value in changes.items() if key in MACHINE_SETTINGS)
         settings.update({key: bool(value) for key, value in changes.items()})
@@ -128,16 +152,22 @@ class Bundle:
     @property
     def nand_epoch(self):
         """The NAND driver epoch of the bundle's firmware, which the emulator formats the NAND for."""
+        return self.firmware["nand_epoch"]
+
+    @property
+    def firmware(self):
+        """The profile's entry for the bundle's firmware."""
         build = self.info["firmware"]["build"]
-        if build not in NAND_EPOCHS:
+        found = self.profile.firmware_by_build(build)
+        if not found:
             raise BundleError("%s has firmware %s, which Skeuo doesn't support" % (self.path, build))
-        return NAND_EPOCHS[build]
+        return found[1]
 
     @property
     def boot_args(self):
-        """The kernel arguments to boot with: code signing enforcement off (see activation.py), except on 2.1.1,
+        """The kernel arguments to boot with: code signing enforcement off (see activation.py), except on firmware
         where the emulator's default arguments already allow any signature."""
-        if self.info["firmware"]["build"] == "5F138":
+        if self.firmware.get("default_boot_args"):
             return None
         return activation.BOOT_ARGS
 
@@ -203,7 +233,7 @@ class Bundle:
             os.remove(self.state)  # left over from a suspend that did not finish
         if os.path.exists(self.overlay):
             log("writing the changed pages into the disk")
-            nand.fold(self.overlay, self.disk)
+            nand.fold(self.profile.nand, self.overlay, self.disk)
 
     def record_suspended(self, fingerprint, clock):
         """Records the state that was just saved to self.state, together with the emulator it belongs to."""
@@ -236,6 +266,7 @@ class Bundle:
     def create(cls, path, ipsw, identity, name=None, settings=None):
         if os.path.exists(path) and os.listdir(path):
             raise BundleError("%s exists and is not empty" % path)
+        check_settings(ipsw.profile, settings or {})
         os.makedirs(os.path.join(path, "logs"), exist_ok=True)
         bundle = cls(path, {
             "format": FORMAT_VERSION,
@@ -243,7 +274,7 @@ class Bundle:
             "board": ipsw.board,
             "firmware": {"version": ipsw.version, "build": ipsw.build},
             "name": name or default_name(ipsw.version),
-            "settings": dict(SETTINGS, **(settings or {})),
+            "settings": dict(default_settings(ipsw.profile), **(settings or {})),
             "identity": identity,
             "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "state": "restoring",
@@ -280,7 +311,7 @@ class Bundle:
         pages = os.path.join(self.path, "nand")
         if os.path.isdir(pages):
             log("converting %s to a disk image" % pages)
-            nand.extract(pages, self.disk + ".part")
+            nand.extract(self.profile.nand, pages, self.disk + ".part")
             os.replace(self.disk + ".part", self.disk)
             shutil.rmtree(pages)
         self.info["format"] = FORMAT_VERSION

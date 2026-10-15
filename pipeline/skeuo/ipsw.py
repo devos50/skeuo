@@ -7,17 +7,7 @@ import plistlib
 import shutil
 import zipfile
 
-# The devices Skeuo emulates, by product type, with the name the app shows
-DEVICE_TYPES = {"iPod2,1": "iPod touch (2nd generation)"}
-SUPPORTED_PRODUCTS = set(DEVICE_TYPES)
-# The firmware the emulator has GID keys for, by build, with the security epoch of its NAND driver. The NAND signature
-# carries that epoch, and iBoot only boots from a NAND formatted for its own epoch.
-NAND_EPOCHS = {
-    "5F138": 1,  # iPhone OS 2.1.1
-    "5G77a": 2,  # iPhone OS 2.2
-    "7A341": 3,  # iPhone OS 3.0
-    "8A293": 4,  # iOS 4.0
-}
+from . import devices
 
 
 class IPSWError(Exception):
@@ -48,13 +38,19 @@ class IPSW:
         self.product = self.plist["ProductType"]
         self.version = self.plist["ProductVersion"]
         self.build = self.plist["ProductBuildVersion"]
-        if self.product not in SUPPORTED_PRODUCTS:
+        if self.product not in devices.PROFILES:
             raise IPSWError("%s is firmware for %s; supported: %s"
-                            % (path, self.product, ", ".join(sorted(SUPPORTED_PRODUCTS))))
+                            % (path, self.product, ", ".join(sorted(devices.PROFILES))))
+        self.profile = devices.get(self.product)
         self.board = self.plist["DeviceMap"][0]["BoardConfig"]
-        if self.build not in NAND_EPOCHS:
+        if self.board != self.profile.board:
+            raise IPSWError("%s is firmware for board %s, not the %s's %s"
+                            % (path, self.board, self.profile.name, self.profile.board))
+        # the firmware the emulator has GID keys for
+        if not self.profile.firmware_by_build(self.build):
             raise IPSWError("%s is %s %s (%s); supported builds: %s"
-                            % (path, self.product, self.version, self.build, ", ".join(sorted(NAND_EPOCHS))))
+                            % (path, self.product, self.version, self.build,
+                               ", ".join(sorted(fw["build"] for fw in self.profile.firmwares.values()))))
 
     def __str__(self):
         return "%s %s (%s)" % (self.product, self.version, self.build)
@@ -97,8 +93,9 @@ class IPSW:
         return self.read(self.plist["RestoreRamDisks"]["Update" if update else "User"])
 
     def kernelcache(self):
-        """The kernelcache that boots the restore ramdisk. 4.0's Restore.plist names a kernelcache.release.s5l8720x
-        that the IPSW doesn't ship; the system one (kernelcache.release.n72) boots the ramdisk too."""
+        """The kernelcache that boots the restore ramdisk. The iPod touch 2G's 4.0 Restore.plist names a
+        kernelcache.release.<platform> that the IPSW doesn't ship; the system one (kernelcache.release.<target>) boots
+        the ramdisk too."""
         name = self.plist["RestoreKernelCaches"]["Release"]
         if not self.exists(name):
             name = self._system_kernelcache_name() or name
@@ -111,7 +108,7 @@ class IPSW:
         return self.read(name) if name else self.kernelcache()
 
     def _system_kernelcache_name(self):
-        # 3.x lists it by platform (s5l8720x), 4.x by target (the board without "ap": n72)
+        # 3.x lists it by platform (the SoC: s5l8720x), 4.x by target (the board without "ap": n72)
         for key in ("KernelCachesByPlatform", "KernelCachesByTarget"):
             caches = self.plist.get(key, {})
             if len(caches) == 1:

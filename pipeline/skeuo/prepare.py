@@ -38,19 +38,20 @@ def lockdown_files(source):
 LOCKDOWND_MODE = 0o755
 
 
-def prepare(disk, workdir, device, product_type, build, lockdown=None, device_certificate=None, log=print):
+def prepare(disk, workdir, device, profile, build, lockdown=None, device_certificate=None, log=print):
     """Changes the filesystems on the disk image of a restored device that never booted. device: the bundle's
-    identity, with the UDID the restore reported. build: the firmware build. device_certificate: a PEM device certificate from Apple for the
+    identity, with the UDID the restore reported. profile: the device's profile. build: the firmware build. device_certificate: a PEM device certificate from Apple for the
     activation record (see activation.py)."""
     hfs.check_supported()
-    partitions = {number: (start, size) for number, start, size in nand.partitions(disk)}
+    page = profile.nand.bytes_per_page
+    partitions = {number: (start, size) for number, start, size in nand.partitions(profile.nand, disk)}
     images = {}
     for number in (SYSTEM_PARTITION, DATA_PARTITION):
         start, size = partitions[number]
         images[number] = os.path.join(workdir, "partition%d.img" % number)
         with open(images[number], "wb") as f:
-            f.truncate(size * nand.BYTES_PER_PAGE)
-        nand.copy_regions(disk, images[number], start * nand.BYTES_PER_PAGE, 0, size * nand.BYTES_PER_PAGE)
+            f.truncate(size * page)
+        nand.copy_regions(disk, images[number], start * page, 0, size * page)
 
     log("letting SpringBoard draw in software")
     plist = plistlib.loads(hfs.read_file(images[SYSTEM_PARTITION], SPRINGBOARD_PLIST))
@@ -61,7 +62,7 @@ def prepare(disk, workdir, device, product_type, build, lockdown=None, device_ce
         system_files.update(activation.system_files(apple_device_certificate=device_certificate is not None))
         if not device_certificate:
             lockdownd = activation.patch_lockdownd(
-                build, hfs.read_file(images[SYSTEM_PARTITION], activation.LOCKDOWND))
+                profile.firmware_by_build(build)[1], hfs.read_file(images[SYSTEM_PARTITION], activation.LOCKDOWND))
             if lockdownd:
                 log("letting lockdownd accept Skeuo's device certificate")
                 system_files[activation.LOCKDOWND] = lockdownd
@@ -71,7 +72,7 @@ def prepare(disk, workdir, device, product_type, build, lockdown=None, device_ce
     if not lockdown:
         log("activating %s" % device["udid"])
         hfs.add_files(images[DATA_PARTITION],
-                      activation.data_files(device["udid"], device["serial_number"], product_type,
+                      activation.data_files(device["udid"], device["serial_number"], profile.product,
                                             device_certificate))
     else:
         files = lockdown_files(lockdown)
@@ -84,4 +85,4 @@ def prepare(disk, workdir, device, product_type, build, lockdown=None, device_ce
     log("writing the changed partitions into the disk")
     for number, image in images.items():
         start, size = partitions[number]
-        nand.copy_regions(image, disk, 0, start * nand.BYTES_PER_PAGE, size * nand.BYTES_PER_PAGE)
+        nand.copy_regions(image, disk, 0, start * page, size * page)
