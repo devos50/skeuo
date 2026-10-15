@@ -230,6 +230,29 @@ driver NSC-Merlot; 0x10 in the third byte would say N45. iBoot keeps it for the 
 whether the kernel cares is still to see. iBoot also writes 2-byte commands to something on SPI0 (chip select
 GPIO 0x700). iBoot prints nothing on UART0 so far.
 
+### The 1G's NAND (found 2026-10-15)
+
+`s5l8900.nand` is the FMC (0x38a00000) with 8 banks of Hynix NAND (0xa514d3ad: 4096 blocks of 128 pages of
+2048 + 64 bytes per bank, the 8 GB model), `s5l8900.nand-ecc` the H1 ECC engine (0x38f00000, interrupt 0x2b), and the
+pages come through DMAC0 (a PL080, peripheral 8). The registers are in the model's comment. The ECC engine computes
+nothing: it fails only all-0xff sectors, as the real one does for erased pages, which the FIL relies on.
+
+iBoot 1.1.5's NAND stack is Whimory 2.1 (FTL, VFL, FIL "H1"), the "legacy" format openiBoot reads. iBoot opens it in
+FUN_18015ca0, and the NAND has to hold, all still to be made:
+
+- a signature page in block 0 of bank 0, its first word 0x43303033 (the "AND" version iBoot prints);
+- on every bank, a page starting with "DEVICEINFOBBT" in the last 10% of the blocks (FUN_180157a0);
+- per bank, the VFL context in the blocks that page names, with the bad block map; the newest copy wins
+  (VFL_Open, FUN_18015994);
+- the FTL context (a page with spare type 'C' in the context block) and its map, erase-count and log tables
+  (FTL_Open, FUN_18014868);
+- then the filesystem through the FTL: iBoot mounts HFS+ and loads the kernelcache (an 8900 container, which the
+  bootrom stand-in decrypts) from it.
+
+Like the 2G (`ipod_touch_nand.c`, which presents a disk image as a freshly formatted VSVFL NAND), the model could
+present a 1.1.x filesystem image in this format with an overlay for writes; that is step 4. The kernel's driver goes
+through the ADM, which the ipod_touch_1g branch has an HLE of.
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -266,7 +289,8 @@ GPIO 0x700). iBoot prints nothing on UART0 so far.
    SPI and the LCD panel done (2026-10-15, efb02708ae): iBoot reads the panel's ID, sets up the display and
    then calls the bootrom's USB stack, which the machine doesn't have. See "iBoot 1.1.5 and the bootrom" below.
    The bootrom's services done (2026-10-15, 4b79b3893f): iBoot gets to the NAND, finds none and starts USB
-   recovery mode.
+   recovery mode. The NAND controller done (2026-10-15, 5fbb206159): iBoot finds the NAND and initialises its FTL,
+   and stops because the NAND is empty. See "The 1G's NAND" below for what it has to hold.
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
 5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
