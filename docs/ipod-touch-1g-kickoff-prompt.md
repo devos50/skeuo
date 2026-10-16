@@ -71,12 +71,14 @@ Since 2026-10-16 (qemu-ios a407aef35d..5e037dae43) the 1G has its ADM (`s5l8900.
 the NAND firmware the kernel uploads; the protocol is in the plan's "The 1.1.5 kernel") and the NAND takes writes
 and erases into the overlay. The kernel opens the FTL, mounts the system volume and the data volume (journaled) and
 launchd starts the daemons and SpringBoard; `make_nand_disk_1g.py` now fills the data volume with /private/var from
-the system volume. The screen still shows the kernel's console: nothing draws into iBoot's framebuffer (0x0fe00000)
-and the LCD windows stay on it.
+the system volume. Since then (qemu-ios 4fd7088c32, 2de433bacf) the LCD controller has its frame interrupt and the TV out
+(`s5l8900.tvout`) its SDO frame interrupt, without which SpringBoard waited for good on the TV out's swap; SpringBoard
+now draws the "Connect to iTunes" screen. When the device then idles into sleep the kernel panics in the USB
+wrangler's power-down (0xc04c1340): it calls its PHY, which the `otgphyctrl` workaround keeps away (details in the
+plan's "The 1.1.5 kernel").
 
-Next: why nothing reaches the screen (does SpringBoard run and render, through AppleH1CLCD / the MBX swap, into
-another surface?), then the WM8758 codec on I2C1, multitouch (Z2, "Could not detect HBPP") and SDIO. Later: the USB
-PHY race, when the 1G needs USB, and folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
+Next: the USB PHY race for real (the workaround breaks sleep), then the WM8758 codec on I2C1, multitouch (Z2, "Could
+not detect HBPP") and SDIO. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 

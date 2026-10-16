@@ -374,10 +374,30 @@ With it the FTL opens ("Apple NAND Driver (AND) 0x43303033", FIL/VFL/FTL Init an
 read-only at / and the data volume journaled at /private/var, and launchd starts the daemons (configd, lockdown,
 mDNSResponder, mediaserverd, SpringBoard). With an empty data volume they failed on missing /var directories, so
 `make_nand_disk_1g.py` now fills the data volume with the system volume's /private/var (as a restore does; the copy
-is owned by uid 501). Not there yet: the screen still shows the kernel's console (both LCD windows stay on iBoot's
-framebuffer at 0x0fe00000 and nothing draws over it), the WM8758 codec on I2C1 (0x1a) doesn't answer (mediaserverd
-crashed with a bus error with the empty /var), SDIO (Wi-Fi, "Timeout waiting for CMDRDY"), and multitouch ("Could
-not detect HBPP").
+is owned by uid 501).
+
+**The screen** (qemu-ios 4fd7088c32, 2de433bacf). SpringBoard (pid 15) ran but drew nothing: its main thread sat in
+an IOMobileFramebuffer call, in the swap wait 0xc037d378 (sleeping on the swap queue at +0x164, mode 2), on the
+TV out's framebuffer, AppleH1TVOut (found by walking allproc from lldb: p_comm at proc+0xeb, the task at proc+0x138,
+its threads from task+0x28 linked at thread+0x1ac, user registers at *(thread+0x28c), the kernel context at
+*(thread+0x29c)+0x10). Two interrupts were missing:
+
+- AppleH1CLCD changes the windows to the next buffer only from its interrupt (0x0d): enables at 0x14, status at
+  0x18 (write 1s to clear), bit 0 each frame, bits 8-13 underruns. `s5l8900.lcd` raises bit 0 at 60 Hz.
+- AppleH1TVOut turns the TV out on when a client hands it a buffer (SpringBoard does for every display): SDO+0x280 =
+  1 (clear), SDO+0x284 = 0 (unmask), SDO+0x000 = 1 (enable), and finishes a buffer only on the SDO's frame interrupt
+  (0x280 bit 0). The TV out's blocks are, from its `reg`, the SDO at 0x39300000 (interrupt 0x1e), the mixer at
+  0x39200000 (interrupt 0x26, underflows at 0x4c) and a third block at 0x39100000 that takes the source formats.
+  `s5l8900.tvout` keeps their registers and raises the SDO's frame interrupt at 60 Hz while it is enabled.
+
+With both, SpringBoard draws the "Connect to iTunes" screen (1.1.5 is not activated). The boot-args don't matter
+here: without them the Apple logo stays up instead of the console, and the same happens. But then the device idles
+into sleep (the PMU driver enables idle sleep, the LCD and the drivers go to power state 0) and **the kernel panics in
+the USB wrangler's power-down** (0xc04c1340, in 0xc04c11f8): it calls its PHY (this+0x68), which is null because the
+`otgphyctrl` workaround keeps the PHY from matching. So the USB PHY race needs a real answer after all.
+
+Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, SDIO (Wi-Fi, "Timeout waiting for CMDRDY"),
+and multitouch ("Could not detect HBPP").
 
 ## App
 
