@@ -111,7 +111,7 @@ dylibs, packaging-plan.md) and every fix to a shared model would have to be made
   as a counter at 0x5C. To check before the 1G uses `ipod_touch_pcf50633_pmu.c`; the 2G's PMU may be a
   different part.
 - **Hardware that really differs: separate models.** The 8900 engine and the ADM (S5L8900 only), the 1G's NAND
-  controller and ECC, the 1G's LCD controller and panel, the first-generation multitouch controller, the 1G's clock
+  controller and ECC, the 1G's LCD controller and panel, the 1G's clock
   tree, and parallel NOR (QEMU's `pflash_cfi02`) instead of SPI NOR. Each new model gets VMState from the start.
 - Rename in a separate commit before the 1G models arrive, so the port's diffs stay readable, and add the commit to
   `.git-blame-ignore-revs`.
@@ -427,8 +427,17 @@ table in its personality (0x00-0x2e, 64 is 0x22). Without the ISL29003 light sen
 device and turns the screen off; home wakes it to "slide to unlock". Waking from real sleep (`button-wake`, the PMU's
 interrupt 0x0a) isn't needed yet, since an activated device doesn't idle into it before auto-lock.
 
-Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, SDIO (Wi-Fi, "Timeout waiting for CMDRDY"),
-and multitouch ("Could not detect HBPP").
+**Multi-touch** (2026-10-16). The 1G's controller is the same Z2 as the 2G's (`multi-touch,z2`, family 81, 15 rows by
+10 columns), and 1.1.5's AppleMultitouchZ2SPI bootloads it (calibration, then the 49128-byte "0x0032.hex" firmware,
+over DMA) and reads frames with the same commands, so the 1G uses the 2G's model (`ipod_touch_multitouch.c`, now
+built for both under `CONFIG_S5L`) instead of a first-generation one. From the device tree: SPI2, chip select
+`function-spi_cs0` 0x1804, `function-reset` 0x606, GPIO interrupt 0x9b (the 1G branch's group 4 bit 27); the
+machine takes the pointer as the touchscreen, as the 2G's LCD does. The 2G's surface bounds and finger-tip offset
+fit 1.1.5 too: taps land on Calculator's keys in every corner, and the slider unlocks. The driver bootloads the
+controller twice during boot (once when it starts, once after SpringBoard is up); both succeed.
+
+Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, and SDIO (Wi-Fi, "Timeout waiting for
+CMDRDY"). Settings opens to an empty grey list.
 
 ## App
 

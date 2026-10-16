@@ -84,8 +84,11 @@ and home buttons (GPIO pad 0x16, which `s5l.gpio` now holds), the power controll
 (PCF50635 LEDOUT/LEDENA) drives `s5l8900.lcd`'s brightness and the ISL29003 light sensor is on I2C0. Power locks
 the device and darkens the screen; home wakes it to "slide to unlock" (plan, "The buttons and waking up").
 
-Next: multitouch (Z2, "Could not detect HBPP") to get past "slide to unlock", then the WM8758 codec on I2C1 and
-SDIO. Waking from real sleep (`button-wake`, the PMU's interrupt) once something idles into it. The USB race when the 1G needs USB. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
+Since 2026-10-16 multi-touch works: the 1G has the 2G's Z2 model on SPI2 (plan, "Multi-touch"), the pointer is the
+touchscreen, and taps and drags reach SpringBoard and apps (slide to unlock, Calculator). Settings opens to an empty
+grey list, still to look at.
+
+Next: the WM8758 codec on I2C1 and SDIO. Waking from real sleep (`button-wake`, the PMU's interrupt) once something idles into it. The USB race when the 1G needs USB. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 
@@ -105,7 +108,9 @@ SDIO. Waking from real sleep (`button-wake`, the PMU's interrupt) once something
     `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume with lockdownd patched
     to activate, and a data volume holding the system volume's /private/var and the initial data ark, sparse.
   - Boots take about 20 seconds to SpringBoard; keep test runs short (25-30 s). Press buttons with the HMP
-    monitor's `sendkey p 300` / `sendkey h 300` and take screenshots with `screendump`.
+    monitor's `sendkey p 300` / `sendkey h 300` and take screenshots with `screendump`. Touches need absolute
+    pointer events, which only QMP sends (`input-send-event` with `abs` x/y in 0..0x7fff and the left `btn`);
+    HMP's `mouse_move` is relative.
   - `dis.py <bin> <base> <start> <end> [arm]` disassembles part of a raw binary (Thumb by default) with Xcode's clang
     and llvm-objdump. There's no capstone, so `-d in_asm` only shows raw bytes.
 - To try something in guest memory without a code change: `-device loader,file=<raw>,addr=<addr>,force-raw=on`
