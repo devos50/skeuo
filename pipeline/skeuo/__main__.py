@@ -39,7 +39,7 @@ def log(text):
 
 
 def bootrom_names():
-    return ", ".join(sorted({"%s %s" % (p.soc, p.bootrom.version) for p in devices.profiles()}))
+    return ", ".join(sorted({"%s %s" % (p.soc, p.bootrom.version) for p in devices.profiles() if p.bootrom}))
 
 
 def versions():

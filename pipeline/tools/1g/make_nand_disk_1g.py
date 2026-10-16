@@ -15,6 +15,10 @@ serial number and the Wi-Fi and Bluetooth addresses, and the record would also h
 lockdownd trusts. The data volume also gets the data ark iTunes leaves behind (as the 2G's in skeuo/activation.py):
 without a brick state in it lockdownd turns the brick state on at start, and for an iPod it never turns it off
 again, so SpringBoard would stay on "Connect to iTunes".
+
+The 4B1 kernelcache also gets the checked notifier null guard in skeuo/firmware1g.py, so USB can run with the
+original device tree. The rebuilt kernel uses literal LZSS (larger but dependency-free) and an unsigned plaintext
+8900 container, accepted by the emulator's bootrom stand-in.
 """
 import os
 import plistlib
@@ -26,6 +30,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from skeuo import activation, hfs  # noqa: E402
+from skeuo.firmware1g import KERNEL_PATH, patch_usb_kernel  # noqa: E402
 
 KEYS = {
     "4B1": "c7973558e8f6af22e38d4573737d1533f1d5eec202bf86a32d941975d76f8906c7f0afe4",
@@ -95,7 +100,8 @@ def main():
                 left -= len(chunk)
         os.remove(raw)
         lockdownd = patch_lockdownd(build, hfs.read_file(system, LOCKDOWND))
-        hfs.add_files(system, {LOCKDOWND: lockdownd}, {LOCKDOWND: 0o755})
+        kernel = patch_usb_kernel(build, hfs.read_file(system, KERNEL_PATH))
+        hfs.add_files(system, {LOCKDOWND: lockdownd, KERNEL_PATH: kernel}, {LOCKDOWND: 0o755})
 
         mnt = os.path.join(tmp, "system")
         subprocess.run(["hdiutil", "attach", "-quiet", "-readonly", "-nobrowse", "-mountpoint", mnt, dec], check=True)

@@ -1,6 +1,7 @@
 # Skeuo with more than one device: plan
 
-Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). The first new device is the
+Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). USB checkpoint 1 reached
+(2026-10-16), with unpaired lockdown queries; SSL pairing remains unverified. The first new device is the
 iPod touch 1G (S5L8900, `n45ap`, `iPod1,1`), whose emulator lives on the
 [`ipod_touch_1g` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/ipod_touch_1g).
 
@@ -278,7 +279,7 @@ iBoot 1.1.5's NAND stack is Whimory 2.1 (FTL, VFL, FIL "H1"), the "legacy" forma
   20 s) with nothing on the serial port.
 
 Programming and erasing came with the ADM (2026-10-16, see "The 1.1.5 kernel"); the 1.1.5 kernel reads the same
-MBR as iBoot (disk0s1, disk0s2), so no GPT is needed. Still to do: folding the 1G's overlay in `nand.py`.
+MBR as iBoot (disk0s1, disk0s2), so no GPT is needed. Folding the 1G's overlay in `nand.py` was added with USB checkpoint 1 (2026-10-16).
 `pipeline/tools/1g/make_nand_disk_1g.py` builds a test disk from the 1.1.5 IPSW: the root filesystem is a FileVault
 (encrcdsa) DMG, VFDecrypt key c7973558e8f6af22e38d4573737d1533f1d5eec202bf86a32d941975d76f8906c7f0afe4 (from The
 iPhone Wiki), holding an Apple Partition Map with the HFSX volume ("LittleBear4B1.N45Bundle").
@@ -304,8 +305,8 @@ are in the prelink plist). With the NVRAM above it logs to UART0 and, with `-v`,
 
 The kernel then starts its IOKit drivers (VIC, edge IC, GPIO, power and clock controllers, DMACs, USB, ADM, MPVD,
 SPI, I2C, timer, watchdog, I2S, MBX, NOR access) and **panicked in AppleS5L8900XUSBWrangler::phyRegistered**
-(0xc04c24e0, a null pointer). This is a race in Apple's driver, not a missing register, and we work around it in the
-NOR's device tree (2026-10-16):
+(0xc04c24e0, a null pointer). This is a race in Apple's driver, not a missing register. The initial device-tree
+workaround below has been replaced for USB bring-up by a checked kernel repair ("USB on the 1G", 2026-10-16):
 
 - **The race.** The wrangler's start (the call at 0xc04c2338) adds a publish notification for AppleS5L8900XUSBPhy
   and only stores the notifier (at +0x6c) when that call returns; the handler removes the notifier first thing. If
@@ -334,7 +335,7 @@ NOR's device tree (2026-10-16):
   timer), and with empty boot-args (no serial KDP, no kprintf). A real device tree (iPod1,1 on 2.2.1, which uses
   AppleSynopsysOTG2 rather than the wrangler) has the arm-io children in the same order. Why a real device or the
   old `ipod_touch_1g` branch (whose timer is only approximate) gets through is not known.
-- **The workaround.** `make_nor_1g.py` renames `usb-otg`'s compatible to `usb-otg,disabled` (same length) in the
+- **The initial workaround (superseded).** `make_nor_1g.py` renamed `usb-otg`'s compatible to `usb-otg,disabled` (same length) in the
   device tree it writes to the NOR, so AppleS5L8900XUSBWrangler never matches and nothing races the PHY, which
   starts as usual. 1.1.5's USB device stack won't come up while this is in place; revisit it when the 1G needs USB
   (restore, usbmuxd), where a 2.x kernel's driver may not have the race at all. The first workaround renamed
@@ -462,6 +463,69 @@ the host (`-audiodev`, the machine's `audiodev`). Not checked: music or video, a
 
 Not there yet either: SDIO (Wi-Fi, "Timeout waiting for CMDRDY").
 
+### USB on the 1G (checkpoint 1, 2026-10-16)
+
+Emulator commits: `8157f87161` (shared OTG/PHY) and `3f7cec5534` (1G board and contract), on
+`skeuo-multi-device`. Kept local for review.
+
+The hand-built 1.1.5 system now boots to SpringBoard with the original `usb-otg,s5l8900x` device-tree compatible
+and the cable connected. `skeuo run` enumerates it through the existing usbmuxd and `ideviceinfo -s` returns its
+DeviceClass, DeviceName, UniqueDeviceID, public key and clock. The mux version is 1.0, as on the 2G. The `-s`
+(simple/unpaired) option matters: plain `ideviceinfo` reaches lockdownd but the installed libimobiledevice fails
+its SSL pairing with `SSL error (-5)`. Secure pairing remains unverified; this checkpoint proves USB and unpaired
+lockdown queries. SSH uses a raw mux TCP tunnel and does not need that pairing path.
+
+What changed:
+
+- The board instantiates `s5l.usb_otg` at 0x38400000, IRQ 0x13, with the old 1G branch's configuration words (the
+  same as the 2G). `usb-chardev` is supported and an unknown ID is refused. The PMU, PHY and OTG session-valid
+  input follow the configured cable. The PHY control register is at 0x18 (0x1c on the 2G). Its ORSTCON link-reset
+  bits (1 and 2) reset the OTG block and release the clock gates iBoot leaves stopped. The PHY reset signal is
+  connected only on the 1G; the 2G wiring stays as it was.
+- `GOTGCTL.BSESVLD` (bit 19) is essential. The 1.1.5 HAL reads it on every interrupt to decide whether the device is
+  connected. Without it descriptors can be read but the next interrupt tears the configuration down and aborts
+  the mux read. With it the first 20-byte version packet reaches AppleUSBDeviceMux and gets a version reply.
+- The shared controller updates DOEPTSIZ's residual byte/packet counts on SETUP reception: 1.1.5 uses them to
+  determine whether eight bytes arrived. Host reset recovery also works when the guest masks ENUMDONE, which
+  1.1.5 never acknowledges. Both changes retain the 2G's behavior in the regression run.
+- **The race still needs a kernel repair.** The stock 4B1 kernel panics at the same null notifier even with real
+  OTG and PHY models present. The old branch has the same simple PHY register behavior and offers no hardware
+  dependency that repairs the notifier's synchronous-callback ordering. `skeuo/firmware1g.py` checks the build and
+  original instruction bytes at Mach-O offset 0x41b4d8 (VA 0xc04c24d8), replaces one diagnostic printf call to make
+  room, then loads the notifier, compares it with zero and conditionally performs the existing virtual remove.
+  The rest of PHY setup runs normally. On synchronous publication the notifier remains registered for the
+  wrangler's lifetime; this avoids relocating code or changing general IOKit notification behavior. This is a
+  firmware repair, not a claim to reproduce the unknown timing of a real device.
+- `make_nor_1g.py` now preserves the device tree. `make_nand_disk_1g.py` applies the repair to the kernelcache built
+  from the user's IPSW. The rebuilt cache uses literal LZSS and an unsigned plaintext 8900 container accepted by
+  the bootrom stand-in; it is larger (about 6.8 MB). Neither firmware nor a device image is committed or shipped.
+  The same repair function can be called by the future restore preparation step.
+- The experimental `ipod1_1` profile permits running hand-built bundles, with no Wi-Fi, suspend or bootrom-dump
+  support advertised. Its restore strategy is explicitly unavailable until checkpoint 2. `nand-epoch` is omitted
+  for legacy NAND. Its 1.1.5 catalog URL points to Apple (size/SHA-1 match the supplied IPSW). The host now folds the bank*.data/spare/state legacy overlay, including the formatter's block-5
+  replacement of the final BBT block; the logical page and write-age metadata match the 2G's format.
+
+Validation: a fresh extraction of the supplied IPSW and both updated hand-build tools produced
+`build/usb-1g/checkpoint1/{nor.bin,disk.img}`. A hand-staged `device.json` makes that directory a run bundle.
+A 24-second CLI boot reached the home screen, `idevice_id -l` found
+`85cce83032eb6bd39ddea68e0be917e4665b5d26`, and `ideviceinfo -s` exited 0. The CLI exited 0 and folded the overlay; cold boots of that folded disk also
+answered `ideviceinfo -s`. Home woke the display to the charging lock screen after resume from idle; the last
+capture is `screen.png` in the test bundle.
+A cloned 2.1.1 bundle booted, answered plain `ideviceinfo -k ProductVersion` with `2.1.1`,
+suspended and resumed after the shared controller changes. Unit tests cover LZSS overlap, corruption/truncation,
+repair rejection on unexpected builds/code, and legacy overlay age selection and context filtering.
+
+To run the hand-built test bundle from the repository root:
+
+```sh
+PYTHONPATH=pipeline python3 -m skeuo run build/usb-1g/checkpoint1 --headless \
+  --qemu packaging/macos/build/qemu/qemu-system-arm --pair-records build/usb-1g/checkpoint1/pairs
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 ideviceinfo -s
+```
+
+No restore work or SSH installation has been started at this checkpoint. The source of the SSH server remains
+Martijn's decision; no third-party binary or package has been downloaded.
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -505,8 +569,13 @@ Not there yet either: SDIO (Wi-Fi, "Timeout waiting for CMDRDY").
    interrupt layout, the LCD controller and the MBX. The kernel starts its IOKit drivers and panics in the USB
    wrangler (a race, see "The 1.1.5 kernel").
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
-   The presentation and the options are done (step 3); writes into the overlay and `nand.py` are left.
-5. **The USB link on the 1G** and the in-emulator restore of 2.x/3.x with the iPod1,1 profile, `experimental`.
+   The presentation and options are done (step 3), overlay writes came with the ADM, and legacy folding in
+   `nand.py` is done with USB checkpoint 1 (2026-10-16). Suspend/resume on the 1G is not validated yet.
+5. **The USB link on the 1G**, then the 1.1.5 restore and SSH, with the iPod1,1 profile, `experimental`.
+   USB checkpoint reached (2026-10-16): the original device tree, a repaired 4B1 kernel and hand-built NAND/NOR
+   boot to SpringBoard through `skeuo run`; `ideviceinfo -s` answers through its usbmuxd. Plain `ideviceinfo`
+   reaches lockdownd but fails SSL pairing; see "USB on the 1G". Stop here for checkpoint review.
+   Checkpoints 2 (factory-new restore) and 3 (SSH) remain; the restore entry point deliberately refuses the 1G.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
 7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), 1.1.x, and `supported` once the support policy's
    bar is met.

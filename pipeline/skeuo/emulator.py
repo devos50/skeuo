@@ -149,8 +149,11 @@ class Emulator:
         self.serial_log = os.path.join(logdir, "serial.log")
 
         def command(host):
-            machine = "%s,nand-disk=%s,nand-overlay=%s,nand-epoch=%d,nor=%s,usb-chardev=usb" % (
-                profile.machine, host["disk"], host["overlay"], nand_epoch, host["nor"])
+            machine = "%s,nand-disk=%s,nand-overlay=%s" % (
+                profile.machine, host["disk"], host["overlay"])
+            if nand_epoch is not None:
+                machine += ",nand-epoch=%d" % nand_epoch
+            machine += ",nor=%s,usb-chardev=usb" % host["nor"]
             # only used at a reset, so it's not part of the fingerprint: a state saved with it loads without it
             if host.get("bootrom"):
                 machine += ",bootrom=" + host["bootrom"]

@@ -147,6 +147,7 @@ class MuxDevice:
     def __init__(self, link):
         self.link = link
         desc = link.wait_for_device()
+        link.ctrl_transfer(0x00, 0x05, 1, 0)  # SET_ADDRESS, before configuration
         self.vid, self.pid = struct.unpack_from("<HH", desc, 8)
         self.serial = link.get_string(desc[16]) if desc[16] else ""
         self._find_interface(link.get_configurations(desc[17]))

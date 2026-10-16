@@ -14,6 +14,9 @@ in an overlay directory, per CE:
   cs<ce>.spare   sparse, the spare area of page p at offset p * bytes_per_spare
   cs<ce>.state   one byte per page: 0 = the page of the formatted NAND, 1 = programmed (in .data/.spare), 2 = erased
 
+The 1G legacy overlay uses bank<bank> instead of cs<ce>, with the same file format. Its VFL starts at physical
+block 201 and maps the factory BBT block 4095 to reserved block 5 (s5l8900_nand_disk.c).
+
 fold() writes the newest copy of every logical page in the overlay into disk.img and deletes the overlay. The FTL's
 own state is not kept: the next boot starts from a freshly formatted NAND again. The overlay together with the
 unchanged disk.img is a consistent NAND as well, so an overlay left over from a crash can be folded later.
@@ -42,20 +45,25 @@ class NANDError(Exception):
 
 
 def check_layout(layout):
-    if layout.kind != "vsvfl":
+    if layout.kind not in ("vsvfl", "legacy"):
         raise NANDError("Skeuo can't read a %s NAND yet" % layout.kind)
 
 
 def disk_pages(layout):
     """The number of logical pages that the FTL presents."""
+    if layout.kind == "legacy":
+        return (layout.blocks_per_bank - 201 - FTL_DATA_VBN_START) * layout.pages_per_sublock
     vfl_sublocks = (VFL_USER_BLOCKS_PER_1024 * layout.blocks_per_bank) // 1024
     return (vfl_sublocks - FTL_DATA_VBN_START) * layout.pages_per_sublock
 
 
 def virtual_page(layout, ce, ppn):
-    """The virtual page that VSVFL keeps at physical page ppn of a CE (for the data blocks, which are never
-    remapped)."""
+    """The virtual page of the formatted VFL at physical page ppn of a CE/bank."""
     chip_block, page_in_block = divmod(ppn, layout.pages_per_block)
+    if layout.kind == "legacy":
+        # The formatter replaces the final bank block (factory BBT) by block 5.
+        block = layout.blocks_per_bank - 1 if chip_block == 5 else chip_block
+        return (block - 201) * layout.pages_per_sublock + page_in_block * layout.num_banks + ce
     vbn, plane = divmod(chip_block, layout.planes_per_ce)
     return vbn * layout.pages_per_sublock + page_in_block * layout.num_banks + ce + layout.num_ce * plane
 
@@ -129,7 +137,8 @@ def page_files(layout, nand):
 def overlay_pages(layout, overlay):
     """The programmed pages of an overlay, with (path, offset) of their data."""
     for ce in range(layout.num_ce):
-        base = os.path.join(overlay, "cs%d." % ce)
+        prefix = "bank" if layout.kind == "legacy" else "cs"
+        base = os.path.join(overlay, "%s%d." % (prefix, ce))
         try:
             with open(base + "state", "rb") as f:
                 state = f.read()

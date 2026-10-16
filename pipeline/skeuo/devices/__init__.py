@@ -2,10 +2,10 @@
 The devices Skeuo emulates, one profile per product (see profile.py). Everything that differs between devices is in
 their profiles; the rest of the pipeline looks a device up here, by the product of its IPSW or its bundle.
 """
-from . import ipod2_1
+from . import ipod1_1, ipod2_1
 from .profile import CAPABILITIES, BootromSpec, NandLayout, Profile
 
-PROFILES = {profile.product: profile for profile in (ipod2_1.PROFILE,)}
+PROFILES = {profile.product: profile for profile in (ipod2_1.PROFILE, ipod1_1.PROFILE)}
 
 
 class DeviceError(Exception):

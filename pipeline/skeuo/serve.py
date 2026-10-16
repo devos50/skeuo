@@ -293,7 +293,7 @@ class Daemon:
 
     def bootrom_for(self, profile):
         """The bootrom to boot a device through: the daemon's, if it is the one of the device's chip."""
-        return self.bootrom if profile.bootrom.matches(self.bootrom) else None
+        return self.bootrom if profile.bootrom and profile.bootrom.matches(self.bootrom) else None
 
     def _download(self, request_id, profile, version, device_id=None):
         cancel = self.cancels[request_id] = threading.Event()

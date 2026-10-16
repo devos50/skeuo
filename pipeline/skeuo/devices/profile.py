@@ -29,7 +29,7 @@ class BootromSpec:
 @dataclass(frozen=True)
 class NandLayout:
     """The NAND's geometry and the FTL/VFL that lays it out (see nand.py)."""
-    kind: str                # "vsvfl"
+    kind: str                # "vsvfl" or Whimory 2.1 "legacy"
     bytes_per_page: int
     bytes_per_spare: int
     meta_size: int           # the part of the spare area that the FTL/VFL sees
@@ -65,7 +65,7 @@ class Profile:
     # version -> {"build", "url" (None: never on a public URL), "size", "sha1", "nand_epoch", "default_boot_args",
     # "lockdownd_certificate_check"}; see the profiles
     firmwares: dict
-    bootrom: BootromSpec
+    bootrom: BootromSpec | None  # None when booting through a dump is not supported
     image_format: str        # "img3", or "img2" (8900 containers)
     nand: NandLayout
     restore: str             # how a bundle is restored: "restored" (the restore ramdisk in the emulator, over USB)
@@ -97,5 +97,5 @@ class Profile:
             "capabilities": sorted(self.capabilities),
             "support": self.support,
             "bootrom": {"soc": self.soc, "version": self.bootrom.version, "size": self.bootrom.size,
-                        "sha256": self.bootrom.sha256},
+                        "sha256": self.bootrom.sha256} if self.bootrom else None,
         }
