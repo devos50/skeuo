@@ -1,7 +1,7 @@
 # Skeuo with more than one device: plan
 
 Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). USB checkpoint 1 reached
-(2026-10-16), with unpaired lockdown queries; SSL pairing remains unverified. The first new device is the
+(2026-10-16), with unpaired lockdown queries; SSLv3 sessions need a compatible host TLS library. The first new device is the
 iPod touch 1G (S5L8900, `n45ap`, `iPod1,1`), whose emulator lives on the
 [`ipod_touch_1g` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/ipod_touch_1g).
 
@@ -471,9 +471,20 @@ Emulator commits: `8157f87161` (shared OTG/PHY) and `3f7cec5534` (1G board and c
 The hand-built 1.1.5 system now boots to SpringBoard with the original `usb-otg,s5l8900x` device-tree compatible
 and the cable connected. `skeuo run` enumerates it through the existing usbmuxd and `ideviceinfo -s` returns its
 DeviceClass, DeviceName, UniqueDeviceID, public key and clock. The mux version is 1.0, as on the 2G. The `-s`
-(simple/unpaired) option matters: plain `ideviceinfo` reaches lockdownd but the installed libimobiledevice fails
-its SSL pairing with `SSL error (-5)`. Secure pairing remains unverified; this checkpoint proves USB and unpaired
-lockdown queries. SSH uses a raw mux TCP tunnel and does not need that pairing path.
+(simple/unpaired) option matters with the installed host libraries. Follow-up tracing (2026-10-16) confirms that
+`Pair`, `ValidatePair` and `StartSession` all succeed. The subsequent SSL handshake fails with OpenSSL's
+`error:0A000102:SSL routines::unsupported protocol`. The host uses Homebrew libimobiledevice 1.4.0 and OpenSSL 3,
+whose installed configuration defines `OPENSSL_NO_SSL3` and `OPENSSL_NO_SSL3_METHOD`.
+
+This is a firmware-generation difference: iPhone OS 1's lockdown connection only supports SSLv3. The
+[libimobiledevice SSL setup source](https://github.com/libimobiledevice/libimobiledevice/blob/1.4.0/src/idevice.c#L1194-L1209)
+explicitly documents it. With the same host libraries, the 2.1.1 clone successfully negotiates `TLSv1` with
+`AES256-SHA`; `ideviceinfo -d -k ProductVersion` exits 0. Earlier wording calling the 1G failure "SSL pairing"
+was imprecise: pairing succeeds, while the encrypted session cannot negotiate a common protocol. The debug logs
+are `build/usb-1g/checkpoint1/ssl-debug.log` and `build/usb-1g/regression-2g/ssl-debug.log` (generated, not shipped).
+A compatible host client would need an isolated SSLv3-capable TLS implementation; changing certificate checks
+or the emulated USB transport does not supply the missing protocol. SSH uses a raw mux TCP tunnel and does not
+need lockdown's SSLv3 session.
 
 What changed:
 
@@ -574,7 +585,7 @@ Martijn's decision; no third-party binary or package has been downloaded.
 5. **The USB link on the 1G**, then the 1.1.5 restore and SSH, with the iPod1,1 profile, `experimental`.
    USB checkpoint reached (2026-10-16): the original device tree, a repaired 4B1 kernel and hand-built NAND/NOR
    boot to SpringBoard through `skeuo run`; `ideviceinfo -s` answers through its usbmuxd. Plain `ideviceinfo`
-   reaches lockdownd but fails SSL pairing; see "USB on the 1G". Stop here for checkpoint review.
+   pairs successfully but fails the SSLv3 session handshake; see "USB on the 1G". Stop here for checkpoint review.
    Checkpoints 2 (factory-new restore) and 3 (SSH) remain; the restore entry point deliberately refuses the 1G.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
 7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), 1.1.x, and `supported` once the support policy's
