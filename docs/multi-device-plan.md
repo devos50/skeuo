@@ -436,8 +436,16 @@ machine takes the pointer as the touchscreen, as the 2G's LCD does. The 2G's sur
 fit 1.1.5 too: taps land on Calculator's keys in every corner, and the slider unlocks. The driver bootloads the
 controller twice during boot (once when it starts, once after SpringBoard is up); both succeed.
 
+**The LCD's windows** (2026-10-16). Settings sometimes stayed an empty grey list (about half the launches), though
+taps worked on its rows. The MBX had rendered the list (in 1.1.5, LayerKit triple-buffers at 0x0f400000, 0x0f496000
+and 0x0fe00000) and the kernel had pointed window 0 at it, but `s5l8900.lcd` showed the last window with a
+framebuffer and a size, which was iBoot's window 1, still at 0x0fe00000. So a frame only showed when it happened to
+land in that buffer. The control register (0x08) turns the windows on: iBoot clears bits 2-7, sets up window 1 and
+ORs in its layer mask << 2 (0x1800a7ea), setting bit 5; the kernel sets bit 6 for window 0 and clears bit 5. The
+model now shows only windows that are on, window n at bit 6 - n (windows 2-4 not seen).
+
 Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, and SDIO (Wi-Fi, "Timeout waiting for
-CMDRDY"). Settings opens to an empty grey list.
+CMDRDY").
 
 ## App
 

@@ -85,8 +85,9 @@ and home buttons (GPIO pad 0x16, which `s5l.gpio` now holds), the power controll
 the device and darkens the screen; home wakes it to "slide to unlock" (plan, "The buttons and waking up").
 
 Since 2026-10-16 multi-touch works: the 1G has the 2G's Z2 model on SPI2 (plan, "Multi-touch"), the pointer is the
-touchscreen, and taps and drags reach SpringBoard and apps (slide to unlock, Calculator). Settings opens to an empty
-grey list, still to look at.
+touchscreen, and taps and drags reach SpringBoard and apps (slide to unlock, Calculator). The LCD now shows only the
+windows its control register turns on (plan, "The LCD's windows"); before that, apps such as Settings often stayed on
+a stale frame.
 
 Next: the WM8758 codec on I2C1 and SDIO. Waking from real sleep (`button-wake`, the PMU's interrupt) once something idles into it. The USB race when the 1G needs USB. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
