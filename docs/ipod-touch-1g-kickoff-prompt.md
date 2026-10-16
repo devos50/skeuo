@@ -56,23 +56,32 @@ Since 2026-10-15 (qemu-ios a4c5e8ee49..619a7efe09) the console works: `make_nor_
 kernel print on UART0, and the verbose console also shows on the screen (`s5l8900.lcd`). The kernel needed the
 S5L8900's timer interrupt layout (seven timers), the LCD controller's window registers (iBoot passes them as the
 video boot arguments) and the MBX (`s5l.mbx`, whose reset the 1.1.5 driver waits on). It now starts its IOKit
-drivers and panics in AppleS5L8900XUSBWrangler::phyRegistered: a race between the USB wrangler and the USB PHY that
-the emulator loses because the wrangler waits for the VIC, which waits for AppleARMCPU (details and what to try in the
-plan's "The 1.1.5 kernel").
+drivers.
 
-Next: that race, then whatever the kernel waits on up to the NAND. Later for the NAND: writes (the kernel drives the
-NAND through the ADM; the ipod_touch_1g branch has an HLE of it) into the overlay, folding the overlay in `nand.py`,
-and whether the 1.1.5 kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1). Smaller
-things iBoot prints: "battery voltage error" (the PMU's ADC).
+Since 2026-10-16 the kernel gets past the USB race (AppleS5L8900XUSBWrangler::phyRegistered on a null notifier). It
+is a race in Apple's driver, not a missing device behaviour: the PHY waits only for clkrstgen, the wrangler for the
+VIC, the VIC for AppleARMCPU and the CPU for the power controller, and with equal-priority config threads in FIFO
+order the PHY always publishes first; timing, boot-args and device-tree order don't change it (evidence in the
+plan's "The 1.1.5 kernel"). As a workaround `make_nor_1g.py` renames `otgphyctrl`'s compatible in the NOR's device
+tree so the PHY driver never matches (1.1.5's USB device stack stays down until we revisit it). The kernel then starts
+the serial ports, PMU, multitouch and MBX and panics in AppleS5L8900XADMFMC: "ADM not ready to start", i.e. the NAND
+path through the ADM. Nothing else before it stops the kernel (the unimplemented clock0, usb-otg and usb-phys
+accesses it makes are listed in the plan). The kernelcache is in Ghidra as
+`/iPod Touch 1G/1.1.5/kernelcache.n45ap.1.1.5.macho`.
+
+Next: the ADM (the ipod_touch_1g branch has an HLE of it), then the NAND: writes into the overlay, folding the overlay
+in `nand.py`, and whether the 1.1.5 kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1).
+Later: the USB PHY race, when the 1G needs USB. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 
 - Build: `packaging/macos/build-qemu.sh` (release build in `packaging/macos/build/qemu/`; `emulator/build` only holds
   a failed configure).
-- `pipeline/tools/1g/` (untracked):
+- `pipeline/tools/1g/`:
   - `make_nor_1g.py <extracted ipsw> <out> [boot-args]` builds a test NOR as a restore would leave it: CRCs, flags,
     the data encrypted and both signatures with the emulator's UID key (needs `openssl`), and an NVRAM that turns on
-    iBoot's console on UART0 and passes the boot-args (default `serial=1 debug=0x8 -v`).
+    iBoot's console on UART0 and passes the boot-args (default `serial=1 debug=0x8 -v`). It renames `otgphyctrl`'s
+    compatible in the device tree to sidestep the USB PHY race (see the plan).
   - `run1g.sh <nor> <seconds>` runs the machine headless and prints the serial output and a histogram of
     unimplemented accesses.
   - `iboot_console.sh <nor> <seconds>` prints iBoot's console messages (through lldb, breaking on its puts);

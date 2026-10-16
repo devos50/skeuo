@@ -304,18 +304,48 @@ are in the prelink plist). With the NVRAM above it logs to UART0 and, with `-v`,
   kernel never writes 0x85c.
 
 The kernel then starts its IOKit drivers (VIC, edge IC, GPIO, power and clock controllers, DMACs, USB, ADM, MPVD,
-SPI, I2C, timer, watchdog, I2S, MBX, NOR access) and **panics in AppleS5L8900XUSBWrangler::phyRegistered**
-(0xc04c24e0, a null pointer). This is a race in Apple's driver, not a missing register: the wrangler's start
-(the call at 0xc04c2338) adds a publish notification for AppleS5L8900XUSBPhy and only stores the notifier (at +0x6c) when that
-call returns, and the handler removes the notifier first thing. If the PHY (`otgphyctrl`, which waits on nothing)
-is already published, the handler runs inside the call and the notifier is still null. Here the wrangler loses
-because it is asleep in IOFilterInterruptEventSource → lookUpInterruptController until the VIC registers itself as
-IOInterruptController00403C70, and the VIC only does that after IOCPUInterruptController::registerInterrupt
-returns, which waits for the CPU to enable its interrupts (AppleARMCPU::start: AppleARMFunction waits for the VIC
-and the power controller, then processor_start blocks to rebind to the boot processor before cpu_start). The order
-is the same with `-icount shift=1`. A real device must get AppleARMCPU through processor_start before the PHY is
-published; why it does isn't known yet (next to try: the order IOKit matches `cpus` and the `arm-io` children in,
-and how many config threads run at once).
+SPI, I2C, timer, watchdog, I2S, MBX, NOR access) and **panicked in AppleS5L8900XUSBWrangler::phyRegistered**
+(0xc04c24e0, a null pointer). This is a race in Apple's driver, not a missing register, and we work around it in the
+NOR's device tree (2026-10-16):
+
+- **The race.** The wrangler's start (the call at 0xc04c2338) adds a publish notification for AppleS5L8900XUSBPhy
+  and only stores the notifier (at +0x6c) when that call returns; the handler removes the notifier first thing. If
+  the PHY (`otgphyctrl`) is already published, the handler runs inside the call on a null notifier.
+- **Why the PHY always wins here** (traced with lldb; the kernelcache is now in Ghidra as
+  `/iPod Touch 1G/1.1.5/kernelcache.n45ap.1.1.5.macho`). AppleS5L8900XIO (0xc04911e8) publishes the arm-io children
+  in device-tree order, each matched on a new config thread, all at the same fixed priority (0x51, no usage decay
+  yet), so the run queue is FIFO. Two wait chains start from the clock controller's `registerService(2)`:
+  - The PHY's start powers its block off: `IODelay(200)`, then `enableDeviceClock` → AppleS5L8900XIO, which sleeps
+    on its command gate (0xc0491668) until its own `function-clock_gate` (clkrstgen) lookup returns. `otgphyctrl`
+    has no `power-gates`, so it needs nothing else.
+  - AppleARMCPU::start (0xc0157bc0) waits in `AppleARMFunction::withProvider("function-cpu_idle")` for the power
+    controller. The power controller's start (0xc0498190) publishes only after
+    `waitForService(AppleS5L8900XClockController)`. Then the CPU yields in `processor_start` (equal priority yields),
+    `cpu_start` → `enableCPUInterrupt` wakes the VIC (blocked in IOCPUInterruptController::registerInterrupt until
+    the CPU is enabled), the VIC registers IOInterruptController00403C70 and wakes the wrangler, asleep in
+    IOFilterInterruptEventSource → lookUpInterruptController.
+  - The clock controller's registration wakes AppleS5L8900XIO first (it started waiting first), then the power
+    controller. AppleS5L8900XIO wakes the PHY before the power controller has even run, and the PHY needs one more
+    pass through the run queue where the CPU → VIC → wrangler chain needs three or four. In the trace the PHY is
+    queued about 7000 ticks (1 ms) ahead of the CPU.
+- **Not timing, not a device.** None of these waits depends on a register or an interrupt. The panic is the same
+  with a 0.1, 1 or 5 ms quantum (std_quantum patched from lldb), with `sched_cswtime` changed (the kernel measures
+  it at boot, 18 to 1098 ticks from run to run, and `clock_delay_until` sleeps rather than spins above 8x it; the
+  PHY's `IODelay` comes before its wait, so it doesn't matter), with `-icount shift=1` or 3 (5 and 7 livelock on the
+  timer), and with empty boot-args (no serial KDP, no kprintf). A real device tree (iPod1,1 on 2.2.1, which uses
+  AppleSynopsysOTG2 rather than the wrangler) has the arm-io children in the same order. Why a real device or the
+  old `ipod_touch_1g` branch (whose timer is only approximate) gets through is not known.
+- **The workaround.** `make_nor_1g.py` renames `otgphyctrl`'s compatible to `otgphyctrl,disabled` (same length) in
+  the device tree it writes to the NOR, so AppleS5L8900XUSBPhy never matches; the wrangler waits for a PHY that
+  never comes and the kernel boots on. 1.1.5's USB device stack won't come up while this is in place; revisit it
+  when the 1G needs USB (restore, usbmuxd), where a 2.x kernel's driver may not have the race at all.
+
+With the PHY disabled the kernel starts the serial ports, DMA channels, MPVD, MBX, the light sensor, the PMU
+(pcf50635, which reads 625 mV for each DOWN converter), multitouch (Z2, bootloading over SPI with DMA), and then
+**panics in AppleS5L8900XADMFMC: "ADM not ready to start", "ADM startup failed"**: the kernel's NAND path through
+the ADM (unmapped, `adm` reads 0 at 0x000), the next step. On the way it touches only unimplemented regions that
+don't stop it: clock0 (reads 0x000, 0x008, 0x404, writes 0x004/0x008/0x404), usb-otg (0x800-0x81c, 0x900-0xbc8,
+0xe00) and usb-phys (0x000, 0x008), and timer 6's register 0x14.
 
 ## App
 
