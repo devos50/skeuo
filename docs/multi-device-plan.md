@@ -397,8 +397,35 @@ here: without them the Apple logo stays up instead of the console, and the same 
 into sleep (the PMU driver enables idle sleep, the LCD and the drivers go to power state 0). With the first
 workaround the kernel panicked there, in the USB wrangler's power-down (0xc04c1340, in 0xc04c11f8): it calls its PHY
 (this+0x68), which was null because the PHY never matched. With the wrangler disabled instead (2026-10-16) the PHY
-starts, the drivers power down and the kernel goes to sleep ("System Sleep", "pmu go hib"); waking it up (the PMU,
-the buttons) is next.
+starts, the drivers power down and the kernel goes to sleep ("System Sleep", "pmu go hib"). That idle sleep only
+came from the activation screen: an activated device stays up.
+
+**Activation** (2026-10-16). lockdownd 1.1.5 (in Ghidra as `/iPod Touch 1G/1.1.5/lockdownd.1.1.5`) works like
+2.1.1's (`pipeline/skeuo/activation.py`): at start `_set_brick_state` turns the brick state on unless the data ark
+has one, and `dealwith_activation` (0xb800) verifies the activation record and calls `determine_activation_state`
+(0xdcb8), which settles on Activated only for a record whose account token has the device's UDID, and never touches
+the brick state on an iPod. The UDID is the SHA-1 of the serial number, IMEI, Wi-Fi and Bluetooth addresses
+(`_synthesize_deviceID`), so it changes once the 1G has Wi-Fi, and the record would need a signature lockdownd
+trusts. 1.1.x has no code signing, so `make_nand_disk_1g.py` patches lockdownd instead: where the record checks join
+(0xe248) the state becomes Activated and the brick flag false, and the path without a record goes there too. It
+also writes 2.1.1's initial data ark (`activation.INITIAL_DATA_ARK`, `-BrickState` false). With both, SpringBoard
+starts on the home screen.
+
+**The buttons and waking up** (qemu-ios 20fb86a087..2d2d4ad41e, 2026-10-16). The buttons are on GPIO pad 0x16
+(`function-button_hold` 0x1605, `function-button_menu` 0x1606, high while pressed), with GPIO interrupts 0x2d and
+0x2e (level-triggered; AppleM68Buttons flips GPIO_INTLEVEL after each edge and reads the pad, then sends consumer
+usages 0x30 and 0x40); `s5l.gpio` now holds the S5L8900's 25 pads, and the machine takes p and h. Power locked the
+device, but home never woke it: SpringBoard's main thread looped in `LKPurpleServerSetScreenBlanked` waiting for a
+render, because LayerKit's render thread was in `IOMobileFramebufferRequestPowerChange(1)`, where the kernel's
+power controller (0xc04984f0) waited for the LCD's domain to come on. On the S5L8900, POWER_STATE (0x14) has a bit
+set for each domain that is off (POWER_ONCTRL clears it, POWER_OFFCTRL sets it; the kernel waits for both), which
+`s5l.sysic` now models with `power-off-bits`. The screen goes dark when the device locks: the PCF50635 keeps the
+backlight in LEDOUT (0x28, the level) and LEDENA (0x29 bit 0), which the PMU model takes as properties and passes to
+`s5l8900.lcd`. ApplePCF50635PMUBacklight maps brightness 0-127 (default 64) to LEDOUT through the `backlight-default`
+table in its personality (0x00-0x2e, 64 is 0x22). Without the ISL29003 light sensor (I2C0 0x44, GPIO interrupt
+0x4c, the device tree's `als`; the 2G's `isl29003dl` model) auto-brightness set LEDOUT 0x05. Power locks the
+device and turns the screen off; home wakes it to "slide to unlock". Waking from real sleep (`button-wake`, the PMU's
+interrupt 0x0a) isn't needed yet, since an activated device doesn't idle into it before auto-lock.
 
 Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, SDIO (Wi-Fi, "Timeout waiting for CMDRDY"),
 and multitouch ("Could not detect HBPP").

@@ -76,8 +76,16 @@ the system volume. Since then (qemu-ios 4fd7088c32, 2de433bacf) the LCD controll
 (`s5l8900.tvout`) its SDO frame interrupt, without which SpringBoard waited for good on the TV out's swap; SpringBoard
 now draws the "Connect to iTunes" screen, then idles into sleep ("System Sleep", "pmu go hib").
 
-Next: waking it up again (the PMU and the buttons), then the WM8758 codec on I2C1, multitouch (Z2, "Could not detect
-HBPP") and SDIO. The USB race when the 1G needs USB. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
+Since 2026-10-16 (qemu-ios 20fb86a087..2d2d4ad41e) the 1G boots to the home screen in about 20 seconds and its
+buttons work. `make_nand_disk_1g.py` patches lockdownd (no code signing on 1.1.x) to settle on Activated and writes
+2.1.1's initial data ark, so the brick state stays off (plan, "Activation"). The machine takes p and h for the power
+and home buttons (GPIO pad 0x16, which `s5l.gpio` now holds), the power controller's POWER_STATE has the S5L8900's
+"off" bits (`power-off-bits`; without them the LCD never came back on after locking), the PMU's backlight
+(PCF50635 LEDOUT/LEDENA) drives `s5l8900.lcd`'s brightness and the ISL29003 light sensor is on I2C0. Power locks
+the device and darkens the screen; home wakes it to "slide to unlock" (plan, "The buttons and waking up").
+
+Next: multitouch (Z2, "Could not detect HBPP") to get past "slide to unlock", then the WM8758 codec on I2C1 and
+SDIO. Waking from real sleep (`button-wake`, the PMU's interrupt) once something idles into it. The USB race when the 1G needs USB. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 
@@ -94,8 +102,10 @@ HBPP") and SDIO. The USB race when the 1G needs USB. Later: folding the 1G's ove
     `NAND=nand-disk=<disk>,nand-overlay=<dir>` adds the NAND. With the NVRAM, `run1g.sh` shows the same on the
     serial log.
   - `make_nand_disk_1g.py <extracted ipsw> <out> [data MB]` builds a NAND disk image from the 1.1.5 IPSW (needs
-    `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume and a data volume
-    holding the system volume's /private/var, sparse.
+    `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume with lockdownd patched
+    to activate, and a data volume holding the system volume's /private/var and the initial data ark, sparse.
+  - Boots take about 20 seconds to SpringBoard; keep test runs short (25-30 s). Press buttons with the HMP
+    monitor's `sendkey p 300` / `sendkey h 300` and take screenshots with `screendump`.
   - `dis.py <bin> <base> <start> <end> [arm]` disassembles part of a raw binary (Thumb by default) with Xcode's clang
     and llvm-objdump. There's no capstone, so `-d in_asm` only shows raw bytes.
 - To try something in guest memory without a code change: `-device loader,file=<raw>,addr=<addr>,force-raw=on`
