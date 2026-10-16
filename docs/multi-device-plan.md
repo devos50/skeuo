@@ -334,12 +334,14 @@ NOR's device tree (2026-10-16):
   timer), and with empty boot-args (no serial KDP, no kprintf). A real device tree (iPod1,1 on 2.2.1, which uses
   AppleSynopsysOTG2 rather than the wrangler) has the arm-io children in the same order. Why a real device or the
   old `ipod_touch_1g` branch (whose timer is only approximate) gets through is not known.
-- **The workaround.** `make_nor_1g.py` renames `otgphyctrl`'s compatible to `otgphyctrl,disabled` (same length) in
-  the device tree it writes to the NOR, so AppleS5L8900XUSBPhy never matches; the wrangler waits for a PHY that
-  never comes and the kernel boots on. 1.1.5's USB device stack won't come up while this is in place; revisit it
-  when the 1G needs USB (restore, usbmuxd), where a 2.x kernel's driver may not have the race at all.
+- **The workaround.** `make_nor_1g.py` renames `usb-otg`'s compatible to `usb-otg,disabled` (same length) in the
+  device tree it writes to the NOR, so AppleS5L8900XUSBWrangler never matches and nothing races the PHY, which
+  starts as usual. 1.1.5's USB device stack won't come up while this is in place; revisit it when the 1G needs USB
+  (restore, usbmuxd), where a 2.x kernel's driver may not have the race at all. The first workaround renamed
+  `otgphyctrl` instead, keeping the PHY from matching; that left the wrangler without a PHY, and its power-down
+  panicked when the device went to sleep (below).
 
-With the PHY disabled the kernel starts the serial ports, DMA channels, MPVD, MBX, the light sensor, the PMU
+With the race sidestepped the kernel starts the serial ports, DMA channels, MPVD, MBX, the light sensor, the PMU
 (pcf50635, which reads 625 mV for each DOWN converter), multitouch (Z2, bootloading over SPI with DMA), and then
 panicked in AppleS5L8900XADMFMC: "ADM not ready to start". On the way it touches only unimplemented regions that
 don't stop it: clock0 (reads 0x000, 0x008, 0x404, writes 0x004/0x008/0x404), usb-otg (0x800-0x81c, 0x900-0xbc8,
@@ -392,9 +394,11 @@ its threads from task+0x28 linked at thread+0x1ac, user registers at *(thread+0x
 
 With both, SpringBoard draws the "Connect to iTunes" screen (1.1.5 is not activated). The boot-args don't matter
 here: without them the Apple logo stays up instead of the console, and the same happens. But then the device idles
-into sleep (the PMU driver enables idle sleep, the LCD and the drivers go to power state 0) and **the kernel panics in
-the USB wrangler's power-down** (0xc04c1340, in 0xc04c11f8): it calls its PHY (this+0x68), which is null because the
-`otgphyctrl` workaround keeps the PHY from matching. So the USB PHY race needs a real answer after all.
+into sleep (the PMU driver enables idle sleep, the LCD and the drivers go to power state 0). With the first
+workaround the kernel panicked there, in the USB wrangler's power-down (0xc04c1340, in 0xc04c11f8): it calls its PHY
+(this+0x68), which was null because the PHY never matched. With the wrangler disabled instead (2026-10-16) the PHY
+starts, the drivers power down and the kernel goes to sleep ("System Sleep", "pmu go hib"); waking it up (the PMU,
+the buttons) is next.
 
 Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, SDIO (Wi-Fi, "Timeout waiting for CMDRDY"),
 and multitouch ("Could not detect HBPP").

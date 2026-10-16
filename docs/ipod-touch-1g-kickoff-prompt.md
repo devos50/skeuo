@@ -62,8 +62,9 @@ Since 2026-10-16 the kernel gets past the USB race (AppleS5L8900XUSBWrangler::ph
 is a race in Apple's driver, not a missing device behaviour: the PHY waits only for clkrstgen, the wrangler for the
 VIC, the VIC for AppleARMCPU and the CPU for the power controller, and with equal-priority config threads in FIFO
 order the PHY always publishes first; timing, boot-args and device-tree order don't change it (evidence in the
-plan's "The 1.1.5 kernel"). As a workaround `make_nor_1g.py` renames `otgphyctrl`'s compatible in the NOR's device
-tree so the PHY driver never matches (1.1.5's USB device stack stays down until we revisit it). The kernel then starts
+plan's "The 1.1.5 kernel"). As a workaround `make_nor_1g.py` renames `usb-otg`'s compatible in the NOR's device
+tree so the wrangler never matches (1.1.5's USB device stack stays down until we revisit it; renaming `otgphyctrl`
+instead, the first workaround, made the wrangler panic when the device went to sleep). The kernel then starts
 the serial ports, PMU, multitouch and MBX. The kernelcache is in Ghidra as
 `/iPod Touch 1G/1.1.5/kernelcache.n45ap.1.1.5.macho`.
 
@@ -73,12 +74,10 @@ and erases into the overlay. The kernel opens the FTL, mounts the system volume 
 launchd starts the daemons and SpringBoard; `make_nand_disk_1g.py` now fills the data volume with /private/var from
 the system volume. Since then (qemu-ios 4fd7088c32, 2de433bacf) the LCD controller has its frame interrupt and the TV out
 (`s5l8900.tvout`) its SDO frame interrupt, without which SpringBoard waited for good on the TV out's swap; SpringBoard
-now draws the "Connect to iTunes" screen. When the device then idles into sleep the kernel panics in the USB
-wrangler's power-down (0xc04c1340): it calls its PHY, which the `otgphyctrl` workaround keeps away (details in the
-plan's "The 1.1.5 kernel").
+now draws the "Connect to iTunes" screen, then idles into sleep ("System Sleep", "pmu go hib").
 
-Next: the USB PHY race for real (the workaround breaks sleep), then the WM8758 codec on I2C1, multitouch (Z2, "Could
-not detect HBPP") and SDIO. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
+Next: waking it up again (the PMU and the buttons), then the WM8758 codec on I2C1, multitouch (Z2, "Could not detect
+HBPP") and SDIO. The USB race when the 1G needs USB. Later: folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 
@@ -87,7 +86,7 @@ not detect HBPP") and SDIO. Later: folding the 1G's overlay in `nand.py`. Smalle
 - `pipeline/tools/1g/`:
   - `make_nor_1g.py <extracted ipsw> <out> [boot-args]` builds a test NOR as a restore would leave it: CRCs, flags,
     the data encrypted and both signatures with the emulator's UID key (needs `openssl`), and an NVRAM that turns on
-    iBoot's console on UART0 and passes the boot-args (default `serial=1 debug=0x8 -v`). It renames `otgphyctrl`'s
+    iBoot's console on UART0 and passes the boot-args (default `serial=1 debug=0x8 -v`). It renames `usb-otg`'s
     compatible in the device tree to sidestep the USB PHY race (see the plan).
   - `run1g.sh <nor> <seconds>` runs the machine headless and prints the serial output and a histogram of
     unimplemented accesses.

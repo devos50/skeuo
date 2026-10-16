@@ -73,12 +73,13 @@ def nvram(variables, epoch):
 # for AppleS5L8900XUSBPhy and only stores the notifier when that call returns, and its handler removes the notifier
 # first. The PHY (otgphyctrl) only waits for clkrstgen, the wrangler waits for the VIC, which waits for the CPU, which
 # waits for the power controller, so the PHY is published first and phyRegistered runs on a null notifier (see the
-# plan's "The 1.1.5 kernel"). Renaming the node's compatible (same length, so the device tree's layout holds) keeps
-# the PHY driver from matching: the wrangler waits for a PHY that never comes, and the kernel boots on.
-def disable_usb_phy(img):
-    old, new = b"otgphyctrl,s5l8900x\0", b"otgphyctrl,disabled\0"
+# plan's "The 1.1.5 kernel"). Renaming usb-otg's compatible (same length, so the device tree's layout holds) keeps
+# the wrangler from matching, so nothing races the PHY. Without the wrangler there's no USB, but the PHY is there:
+# disabling the PHY instead left the wrangler without one, and its power-down panicked when the device went to sleep.
+def disable_usb_wrangler(img):
+    old, new = b"usb-otg,s5l8900x\0", b"usb-otg,disabled\0"
     at = img.find(old, 0x400)
-    assert at > 0 and img.find(old, at + 1) < 0, "otgphyctrl's compatible not found once"
+    assert at > 0 and img.find(old, at + 1) < 0, "usb-otg's compatible not found once"
     img[at:at + len(new)] = new
 
 def main(ipsw, out, boot_args=DEFAULT_BOOT_ARGS):
@@ -93,7 +94,7 @@ def main(ipsw, out, boot_args=DEFAULT_BOOT_ARGS):
         img = bytearray(unwrap(os.path.join(fw, name + ".img2")))
         assert img[:4] == b"2gmI" and img[4:8] == tag[::-1], (name, img[:8])
         if tag == b"dtre":
-            disable_usb_phy(img)
+            disable_usb_wrangler(img)
         data_len = struct.unpack("<I", img[0x10:0x14])[0]
         total = (0x400 + data_len + GRANULE - 1) // GRANULE * GRANULE
         # A restore records the length in granules, encrypts the data and signs it (flags 9 and 1), marks the image
