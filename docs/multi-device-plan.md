@@ -444,8 +444,23 @@ land in that buffer. The control register (0x08) turns the windows on: iBoot cle
 ORs in its layer mask << 2 (0x1800a7ea), setting bit 5; the kernel sets bit 6 for window 0 and clears bit 5. The
 model now shows only windows that are on, window n at bit 6 - n (windows 2-4 not seen).
 
-Not there yet either: the WM8758 codec on I2C1 (0x1a) doesn't answer, and SDIO (Wi-Fi, "Timeout waiting for
-CMDRDY").
+**Audio** (2026-10-16). AppleWM8758Audio's first write to the codec failed ("I2C register write failed (0, 0)"): nothing
+answered at 0x1a on I2C1. The codec is now `wm8758` (`ipod_touch_wm8758.c`), fed by i2s1 (`i2s,s5l8900x` at
+0x3cd00000), which is the 2G's I2S model (the same AppleS5L8900XI2SController drives both, now built under
+`CONFIG_S5L`). From the device tree: i2s1's DMA is DMAC1 peripherals 2 (TX) and 3 (RX), its frame sync GPIO interrupt
+0xaa, the codec's `function-hp_detect` pad 0x1205 (high: headphones in; `hp-detect-invert` flips it). The codec is
+write-only, two bytes per register (address << 1 | bit 8, then bits 7:0), with the WM8978 family's registers. The
+driver runs the PLL for each rate (N 10, K 0x7fbe8 for 44.1 kHz and its fractions, 0xeb15aa for 48 kHz) and picks
+MCLKDIV for 256 fs, so the model works the rate out from R6, R7 and the PLL; the codec's MCLK comes out at about 9 MHz.
+Two more things were missing: the machine only wired GPIO interrupt groups 0-4 to the VIC, so the driver waited
+forever for i2s1's frame sync (0xaa is group 5) and never started a transfer; and the jack. OUT1 is the headphones,
+OUT2 the piezo clicker: N45AP.plist gives SpringBoard `piezo-clicker`, so the 1G's system sounds (lock, unlock,
+keyboard) are synthesised clicks (bursts of 64 and 128 samples of a 5.9 kHz square at -15 dB), not the .caf files.
+Without headphones the driver mutes OUT1 and keeps OUT2 at 0 dB; the machine reads the jack as in (the host's output
+stands in for the headphones), and the host hears the louder of the two, as on the 2G. The lock and unlock clicks reach
+the host (`-audiodev`, the machine's `audiodev`). Not checked: music or video, as the test disk has none.
+
+Not there yet either: SDIO (Wi-Fi, "Timeout waiting for CMDRDY").
 
 ## App
 
