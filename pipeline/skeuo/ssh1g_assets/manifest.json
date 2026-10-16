@@ -1,0 +1,9 @@
+{
+  "dropbear": "2026.94",
+  "dash": "0.5.13.5",
+  "target": "armv6-apple-ios1.0",
+  "sha256": {
+    "dropbear": "26d508eef0d23e75a01ffc22c65765770781934325be90921353bde6dcca43fb",
+    "dash": "82f0bc7ec3aa6a02728c71016174f56e47d20935fe4f0b2ecc19528346b094a2"
+  }
+}
