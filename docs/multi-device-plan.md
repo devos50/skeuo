@@ -277,9 +277,8 @@ iBoot 1.1.5's NAND stack is Whimory 2.1 (FTL, VFL, FIL "H1"), the "legacy" forma
   (entry 0x30), decompresses it and starts the kernel, which runs (in FIQ mode around 0xc006152c-0xc0061640 after
   20 s) with nothing on the serial port.
 
-Still to do: programming and erasing (iBoot's FIL only reads; the kernel drives the NAND through the ADM, which the
-ipod_touch_1g branch has an HLE of), and folding the 1G's overlay in `nand.py`. The kernel's partition scheme is to
-check: the generator wrote an MBR with a protective 0xEE entry and a GPT for 1.1, which iBoot 1.1.5 doesn't read.
+Programming and erasing came with the ADM (2026-10-16, see "The 1.1.5 kernel"); the 1.1.5 kernel reads the same
+MBR as iBoot (disk0s1, disk0s2), so no GPT is needed. Still to do: folding the 1G's overlay in `nand.py`.
 `pipeline/tools/1g/make_nand_disk_1g.py` builds a test disk from the 1.1.5 IPSW: the root filesystem is a FileVault
 (encrcdsa) DMG, VFDecrypt key c7973558e8f6af22e38d4573737d1533f1d5eec202bf86a32d941975d76f8906c7f0afe4 (from The
 iPhone Wiki), holding an Apple Partition Map with the HFSX volume ("LittleBear4B1.N45Bundle").
@@ -342,10 +341,43 @@ NOR's device tree (2026-10-16):
 
 With the PHY disabled the kernel starts the serial ports, DMA channels, MPVD, MBX, the light sensor, the PMU
 (pcf50635, which reads 625 mV for each DOWN converter), multitouch (Z2, bootloading over SPI with DMA), and then
-**panics in AppleS5L8900XADMFMC: "ADM not ready to start", "ADM startup failed"**: the kernel's NAND path through
-the ADM (unmapped, `adm` reads 0 at 0x000), the next step. On the way it touches only unimplemented regions that
+panicked in AppleS5L8900XADMFMC: "ADM not ready to start". On the way it touches only unimplemented regions that
 don't stop it: clock0 (reads 0x000, 0x008, 0x404, writes 0x004/0x008/0x404), usb-otg (0x800-0x81c, 0x900-0xbc8,
 0xe00) and usb-phys (0x000, 0x008), and timer 6's register 0x14.
+
+**The ADM** (qemu-ios a407aef35d, 5e037dae43; 2026-10-16). The ADM (0x38800000, interrupt 0x25) is a core that runs
+the NAND firmware the kernel uploads ("CalmADMFMCFirmware-17"); `s5l8900.adm` carries out that firmware's commands
+instead of running it. The protocol, from AppleS5L8900XADM (admStart 0xc04aa270, interrupt handler 0xc04a9de0) and
+AppleS5L8900XADMFMC (start 0xc04acb14, command issue 0xc04abf9c, wait 0xc04ab88c, I/O 0xc04ac248 and 0xc04ab93c):
+
+- CTRL (0x00): bit 0 runs the core, bit 1 is set while it is stopped, bit 2 is a soft reset (the kernel waits for it
+  to clear). Code sections' physical addresses go to 0x50 and 0x68-0x80, data sections' to 0x54 and 0x84-0x8c; the
+  kernel then writes 0x70 and sets bit 0, and AppleS5L8900XADMFMC waits (11 x 50 ms) for the POST byte at the start
+  of data section 2 (0x3378 bytes) to reach 0x50, with the abort code after it 0.
+- INT (0x04): bit 4 a command is done ("upload"), bit 6 the firmware logged to its ring at data section 2 + 0x2b58
+  (the kernel prints it), bit 5 something the stop path waits for. Writing n acknowledges bit n; writing 2 hands over
+  a command. Results are read from 0x30-0x3c: status (0 ok, 1 HW error, 2 bad argument, 0xff timeout), completion
+  (0, 1, 2 = write errors), and for reads 0xfe when the page is blank (the kernel returns e00002e5).
+- The command block at data section 2 + 0x1104, big-endian: opcode at 0x24 (1 reset, which leaves each bank's chip
+  ID in data section 3; 2/3 interleaved/plain read; 4/5 interleaved/plain write; 6 erase), page count at 0x28, meta
+  bytes per page at 0x2c (12), banks at 0x30, chip enables from 0x34, flags at 0x3c (bit 0: meta data only), ECC mode
+  at 0x3e, bank index per page from 0x44, page per page from 0x244, a DMA segment list from 0xa44. The interleaved
+  commands give one bank and first page per bank, and the pages go round the banks. The old branch's HLE read the
+  opcodes little-endian (0x100-0x600).
+- The page data doesn't go through the ADM: the kernel moves it through the FMC's FIFO with its own PL080 channel,
+  after ringing the doorbell (writes add a 16-byte pad after each page). The meta data goes through data section 3.
+  The model queues the pages on the NAND (a read stream refills the FIFO as the DMA drains it; a write stream
+  programs a page per 2048 + 16 bytes and signals "stream-done", which completes the command) and writes pages and
+  erases into the overlay.
+
+With it the FTL opens ("Apple NAND Driver (AND) 0x43303033", FIL/VFL/FTL Init and Open OK), the system volume mounts
+read-only at / and the data volume journaled at /private/var, and launchd starts the daemons (configd, lockdown,
+mDNSResponder, mediaserverd, SpringBoard). With an empty data volume they failed on missing /var directories, so
+`make_nand_disk_1g.py` now fills the data volume with the system volume's /private/var (as a restore does; the copy
+is owned by uid 501). Not there yet: the screen still shows the kernel's console (both LCD windows stay on iBoot's
+framebuffer at 0x0fe00000 and nothing draws over it), the WM8758 codec on I2C1 (0x1a) doesn't answer (mediaserverd
+crashed with a bus error with the empty /var), SDIO (Wi-Fi, "Timeout waiting for CMDRDY"), and multitouch ("Could
+not detect HBPP").
 
 ## App
 

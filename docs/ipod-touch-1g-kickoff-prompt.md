@@ -64,14 +64,19 @@ VIC, the VIC for AppleARMCPU and the CPU for the power controller, and with equa
 order the PHY always publishes first; timing, boot-args and device-tree order don't change it (evidence in the
 plan's "The 1.1.5 kernel"). As a workaround `make_nor_1g.py` renames `otgphyctrl`'s compatible in the NOR's device
 tree so the PHY driver never matches (1.1.5's USB device stack stays down until we revisit it). The kernel then starts
-the serial ports, PMU, multitouch and MBX and panics in AppleS5L8900XADMFMC: "ADM not ready to start", i.e. the NAND
-path through the ADM. Nothing else before it stops the kernel (the unimplemented clock0, usb-otg and usb-phys
-accesses it makes are listed in the plan). The kernelcache is in Ghidra as
+the serial ports, PMU, multitouch and MBX. The kernelcache is in Ghidra as
 `/iPod Touch 1G/1.1.5/kernelcache.n45ap.1.1.5.macho`.
 
-Next: the ADM (the ipod_touch_1g branch has an HLE of it), then the NAND: writes into the overlay, folding the overlay
-in `nand.py`, and whether the 1.1.5 kernel reads the MBR as iBoot does (the old generator also wrote a GPT for 1.1).
-Later: the USB PHY race, when the 1G needs USB. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
+Since 2026-10-16 (qemu-ios a407aef35d..5e037dae43) the 1G has its ADM (`s5l8900.adm`, carrying out the commands of
+the NAND firmware the kernel uploads; the protocol is in the plan's "The 1.1.5 kernel") and the NAND takes writes
+and erases into the overlay. The kernel opens the FTL, mounts the system volume and the data volume (journaled) and
+launchd starts the daemons and SpringBoard; `make_nand_disk_1g.py` now fills the data volume with /private/var from
+the system volume. The screen still shows the kernel's console: nothing draws into iBoot's framebuffer (0x0fe00000)
+and the LCD windows stay on it.
+
+Next: why nothing reaches the screen (does SpringBoard run and render, through AppleH1CLCD / the MBX swap, into
+another surface?), then the WM8758 codec on I2C1, multitouch (Z2, "Could not detect HBPP") and SDIO. Later: the USB
+PHY race, when the 1G needs USB, and folding the 1G's overlay in `nand.py`. Smaller things iBoot prints: "battery voltage error" (the PMU's ADC).
 
 ## Tools
 
@@ -88,8 +93,8 @@ Later: the USB PHY race, when the 1G needs USB. Smaller things iBoot prints: "ba
     `NAND=nand-disk=<disk>,nand-overlay=<dir>` adds the NAND. With the NVRAM, `run1g.sh` shows the same on the
     serial log.
   - `make_nand_disk_1g.py <extracted ipsw> <out> [data MB]` builds a NAND disk image from the 1.1.5 IPSW (needs
-    `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume and an empty data
-    volume, sparse.
+    `vfdecrypt` and `dmg2img` from Homebrew): an MBR with 2048-byte LBAs, the system volume and a data volume
+    holding the system volume's /private/var, sparse.
   - `dis.py <bin> <base> <start> <end> [arm]` disassembles part of a raw binary (Thumb by default) with Xcode's clang
     and llvm-objdump. There's no capstone, so `-d in_asm` only shows raw bytes.
 - To try something in guest memory without a code change: `-device loader,file=<raw>,addr=<addr>,force-raw=on`

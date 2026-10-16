@@ -2,7 +2,8 @@
 """make_nand_disk_1g.py <extracted ipsw> <out disk image> [data MB]: builds a test NAND disk image for the 1G
 (nand-disk=) from a 1.1.x IPSW, as iBoot 1.1.5 reads it: an MBR in the first logical page whose LBAs count 2048-byte
 pages (iBoot takes the block device's block size, the FTL's page), partition 1 the system volume (disk0s1, mounted at
-/) and partition 2 an empty HFS+ data volume (disk0s2, /private/var).
+/) and partition 2 a journaled HFS+ data volume (disk0s2, /private/var) holding the system volume's /private/var, as
+a restore leaves it (the copy is owned by the user running this, uid 501 on a Mac, which is also mobile's).
 
 The system volume comes from the root filesystem DMG, decrypted with the build's VFDecrypt key (vfdecrypt and dmg2img
 from Homebrew). Keys are per build; only 1.1.5 (4B1) is known here. The disk image is sparse, so the NAND model
@@ -53,9 +54,15 @@ def main():
         subprocess.run(["dmg2img", dec, raw], check=True, stdout=subprocess.DEVNULL)
         sys_off, sys_len = apm_hfs_partition(raw)
 
-        data_dmg = os.path.join(tmp, "data.dmg")
-        subprocess.run(["hdiutil", "create", "-quiet", "-size", f"{data_mb}m", "-fs", "Journaled HFS+",
-                        "-volname", "Data", "-layout", "NONE", data_dmg], check=True)
+        mnt = os.path.join(tmp, "system")
+        subprocess.run(["hdiutil", "attach", "-quiet", "-readonly", "-nobrowse", "-mountpoint", mnt, dec], check=True)
+        try:
+            data_dmg = os.path.join(tmp, "data.dmg")
+            subprocess.run(["hdiutil", "create", "-quiet", "-size", f"{data_mb}m", "-fs", "Journaled HFS+",
+                            "-volname", "Data", "-layout", "NONE", "-format", "UDRW",
+                            "-srcfolder", os.path.join(mnt, "private/var"), data_dmg], check=True)
+        finally:
+            subprocess.run(["hdiutil", "detach", "-quiet", mnt], check=True)
         subprocess.run(["hdiutil", "convert", "-quiet", data_dmg, "-format", "UDTO", "-o",
                         os.path.join(tmp, "data")], check=True)
         data_img = os.path.join(tmp, "data.cdr")
