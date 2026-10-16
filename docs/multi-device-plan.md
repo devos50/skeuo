@@ -1,7 +1,8 @@
 # Skeuo with more than one device: plan
 
-Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). USB checkpoint 1 reached
-(2026-10-16), with unpaired lockdown queries; SSLv3 sessions need a compatible host TLS library. The first new device is the
+Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). USB checkpoints 1 and 2 reached
+(2026-10-16): unpaired lockdown queries and a factory-new 1.1.5 IPSW restore to the home screen.
+SSLv3 sessions need a compatible host TLS library. The first new device is the
 iPod touch 1G (S5L8900, `n45ap`, `iPod1,1`), whose emulator lives on the
 [`ipod_touch_1g` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/ipod_touch_1g).
 
@@ -173,8 +174,8 @@ The iPod touch 1G shipped iPhone OS 1.1 to 3.1.3.
 - **2.x and 3.x** use the same restored protocol as the 2G, so the in-emulator restore should work once the machine
   has the USB link, with the profile picking the 1G's NAND layout, image format and boot path. Target these first.
   To check: which of these firmwares' files are IMG3 and which still come in 8900 containers on the S5L8900.
-- **1.1.x** uses 8900 containers and an older restore, with a different ramdisk and filesystem layout. Supporting it
-  probably means a second restore path (or building the NAND image offline). Decided: later, as its own step.
+- **1.1.x** uses 8900 containers and legacy recovery USB messages. Checkpoint 2 implements that recovery transport
+  for 1.1.5, then reuses the existing restored/ASR client with protocol 11 and legacy filesystem preparation.
 - **Downloads**: which 1G IPSWs Apple still serves needs checking, as was done for the 2G (download.py). Like
   iPhone OS 3.0 on the 2G, some 1G upgrades were paid and may never have been on a public URL; those need "pick a
   local IPSW".
@@ -198,8 +199,8 @@ What LLB 1.1.5 (iBoot-204.3.16) needs from the NOR, so that Skeuo can write one 
   - a data signature at 0x20-0x5f: SHA-1 of the encrypted data plus 44 fixed bytes, encrypted with the image key;
   - a header signature at 0x3e0-0x3ff: SHA-1 of 0x0-0x3df plus 12 fixed bytes, encrypted with the image key.
   The image key comes from the emulator's UID key, so a NOR made this way only works in the emulator, which is fine.
-- Still to learn: where a real restore puts LLB (for now it is the first image, and the machine finds it by tag),
-  and whether iBoot needs more (SysCfg at 0x4000 holds only a stub).
+- Checkpoint 2 establishes the real restore layout: LLB at 0x8000, code at 0x8800 and the image-list superblock
+  at 0x8400; see below. The machine also accepts the older hand-built list layout. SysCfg is at 0x4000.
 - **NVRAM** (iBoot 1.1.5, FUN_18004b74 and FUN_18008576; the real dump has the same layout): two banks of 0x2000
   bytes at the end of `nor0` (0xfc000 and 0xfe000), the bank with the higher epoch wins. A bank is CHRP NVRAM: a 0x5a
   partition named "nvram" (header checksum at 1, length in 16-byte units at 2, name at 4) with the Adler-32 of 0x14
@@ -537,6 +538,79 @@ USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 ideviceinfo -s
 No restore work or SSH installation has been started at this checkpoint. The source of the SSH server remains
 Martijn's decision; no third-party binary or package has been downloaded.
 
+### IPSW restore on the 1G (checkpoint 2, 2026-10-16)
+
+Emulator commit: `d24de645c6` on `skeuo-multi-device`.
+
+The 4B1 restore uses the actual iBSS, iBEC and restore ramdisk from the user's IPSW, starting with an empty disk
+and a NOR containing only the generated SysCfg and NVRAM. No prebuilt NAND/NOR or Apple binary is shipped.
+
+Bring-up findings:
+
+- `Restore.plist` starts its DeviceMap with generic `s5l8900xall`; select the `n45ap` entry, with recovery PID
+  `0x1280`, rather than assuming the first entry. The ramdisk enumerates as `05ac:1291`, mux version 1.0.
+- iBSS is raw ARM code in an 8900 container, not an Img2 payload. The machine can now start it in SRAM through
+  the bootrom stand-in. iBSS then uploads/starts iBEC over the real recovery USB interface.
+- OS 1.x recovery has a message protocol: 12-byte `<HHII` headers on OUT 4, acknowledgement on IN 3, commands
+  on OUT 2, file data on OUT 5. Commands include the newline; file uploads set `filesize`. This layout is also
+  documented in [libirecovery's legacy recovery implementation](https://github.com/libimobiledevice/libirecovery/blob/master/src/libirecovery.c).
+- `SET_ADDRESS` is required even on the point-to-point emulated link: iBSS/iBEC use it to initialize bulk packet
+  sizes. iBEC takes its original 8900 device tree, ramdisk and kernel; the restore kernel gets the same checked
+  USB notifier repair as the installed kernel. The ramdisk boots with `rd=md0`.
+- `restored_external` reports protocol 11. The existing restored/ASR client restores and verifies the original
+  encrypted root image, creates both HFS+ filesystems, and moves `/private/var` to the data partition.
+- Mux sends fit the 16 KiB MTU including headers and respect smaller advertised windows. Output has a bounded
+  wait and retries unacknowledged data; stale acknowledgements cannot move the acknowledged position backwards.
+  Device packets, including pure window updates, receive an ACK as in usbmuxd.
+- On the 1G, endpoint DMA completion is deferred beyond the endpoint-enable register write. The 1.x driver clears
+  the old interrupt just after arming DMA; completing synchronously inside that write could lose the new completion.
+  The 2G retains its existing endpoint timing.
+- NORData carries decoded Img2 payloads for the ordinary images; LLB keeps its original 8900 envelope. The 1G's AES and SHA-1 IRQs
+  are now connected (`0x27`, `0x28`, as in the original device tree); polling during boot had hidden the missing wires.
+  The AES model also answers the known GID encryption of the 16-byte seed that derives key `0x837`, needed when
+  the kernel decodes the LLB envelope. Its existing 2G GID table and behavior are unchanged.
+- LLB is installed separately at NOR `0x8000`, as a format-1 8900 container encrypted with key `0x836`
+  (derived from the emulator UID). Raw code starts at `0x8800`; the Img2 directory is inserted in the unused
+  header area at `0x8400`. Its granule is `0x2000`, with ordinary images starting at `0x28000`. The bootrom
+  stand-in loads this LLB, while retaining support for the hand-built Img2-list layout.
+- The NOR backend is writable raw flash. The SST `00bf:273f` chip now accepts CFI query `98` after the AA/55 unlock
+  sequence, which the kernel uses before programming. Other CFI devices retain their existing command handling.
+- The restored data volume lacks the original `/private/var` seed tree. Preparation decrypts the user's IPSW root
+  image with `vfdecrypt` and copies that tree to the never-booted data volume, preserving modes and symlinks.
+  `vfdecrypt` must be on PATH; the restore checks this before creating a bundle.
+- Preparation applies the build-checked lockdownd activation repair and initial data ark used by the hand-built
+  disk, plus the USB kernel repair and software drawing setting. The profile remains experimental.
+- Restored clears `boot-args`. Preparation reinstates the hand-built image's tested normal arguments
+  (`serial=1 debug=0x8 -v`) and `auto-boot=true`. It updates the alternate NVRAM bank with a newer generation
+  and valid Adler-32, preserving other variables and partitions from the newest valid bank.
+
+Validation: all 13 pipeline tests pass, including an optional firmware-free QEMU test of installed LLB loading,
+key `0x837`, AES IRQ assertion/acknowledgement, SST CFI query mode and persistent NOR programming. The final
+QEMU build also passes the cloned 2.1.1 bundle's USB query, suspend and resume. Tests cover NVRAM bank
+selection, variable/partition preservation, checksums and refusal of invalid or overfull banks.
+
+The public `skeuo restore` command created `build/usb-1g/checkpoint2-final-verified` from a new empty disk and
+factory NOR. Restored reported status 0 at 372.1 seconds, including NOR programming; preparation completed and
+marked the bundle ready. The subsequent normal `skeuo run` cold boot reached SpringBoard in the 24-second
+check, without an iBSS override. `idevice_id -l` and `ideviceinfo -s` exited 0 with UDID
+`697d71f4eae23b609ed75ce07e38afbbb401cef9`. After dismissing the first-use home-screen tip, `screen.png` shows
+the home screen. The CLI exited 0 and folded the overlay. Generated evidence lives alongside the bundle:
+`checkpoint2-final-verified-restore.log`, `checkpoint2-final-verified-boot.log`, and the bundle's `restore-logs/`.
+No firmware or generated bundle is committed.
+
+Reproduce from the repository root on macOS, with `vfdecrypt` on PATH:
+
+```sh
+PYTHONPATH=pipeline python3 -m skeuo restore /path/to/iPod1,1_1.1.5_4B1_Restore.ipsw \
+  build/usb-1g/checkpoint2-final-verified --qemu packaging/macos/build/qemu/qemu-system-arm
+PYTHONPATH=pipeline python3 -m skeuo run build/usb-1g/checkpoint2-final-verified --headless --power-off \
+  --qemu packaging/macos/build/qemu/qemu-system-arm
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 ideviceinfo -s
+```
+
+SSH has not been started, and no third-party binary or package has been downloaded. Stop for checkpoint review
+before checkpoint 3; the SSH server source remains Martijn's decision.
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -585,8 +659,11 @@ Martijn's decision; no third-party binary or package has been downloaded.
 5. **The USB link on the 1G**, then the 1.1.5 restore and SSH, with the iPod1,1 profile, `experimental`.
    USB checkpoint reached (2026-10-16): the original device tree, a repaired 4B1 kernel and hand-built NAND/NOR
    boot to SpringBoard through `skeuo run`; `ideviceinfo -s` answers through its usbmuxd. Plain `ideviceinfo`
-   pairs successfully but fails the SSLv3 session handshake; see "USB on the 1G". Stop here for checkpoint review.
-   Checkpoints 2 (factory-new restore) and 3 (SSH) remain; the restore entry point deliberately refuses the 1G.
+   pairs successfully but fails the SSLv3 session handshake; see "USB on the 1G".
+   Factory restore checkpoint 2 reached (2026-10-16): the actual 1.1.5 IPSW restores from empty disk/factory NOR,
+   automatically prepares the filesystems and NVRAM, then boots to SpringBoard through `skeuo run` with USB
+   queries working. See "IPSW restore on the 1G". **Stop here for checkpoint review; checkpoint 3 (SSH) has not
+   started.**
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
-7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), 1.1.x, and `supported` once the support policy's
+7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), other firmware versions, and `supported` once the support policy's
    bar is met.

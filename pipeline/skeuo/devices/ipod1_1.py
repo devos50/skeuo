@@ -1,6 +1,5 @@
-"""iPod touch 1G, n45ap. USB bring-up on user-supplied 1.1.5 firmware.
+"""iPod touch 1G, n45ap. Restore and USB on user-supplied 1.1.5 firmware.
 
-Restore support is deliberately unavailable until the 1.x restore path is proven.
 The emulator currently boots through its bootrom stand-in only.
 """
 from .profile import NandLayout, Profile
@@ -24,7 +23,7 @@ PROFILE = Profile(
     nand=NandLayout(kind="legacy", bytes_per_page=2048, bytes_per_spare=64,
                     meta_size=12, pages_per_block=128, num_ce=8,
                     blocks_per_ce=4096, planes_per_ce=1),
-    restore="unavailable",
+    restore="restored",
     capabilities=frozenset({"audio", "accelerometer", "usbmux"}),
     support="experimental",
 )

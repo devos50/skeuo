@@ -255,17 +255,21 @@ class NORServer:
     """Answers the NORData request with LLB and the other NOR images, which
     restored flashes through AppleImage3NORAccess."""
 
-    def __init__(self, llb, images, log=print):
+    def __init__(self, llb, images, log=print, decode=None):
         self.llb = llb
         self.images = images
         self.log = log
+        self.decode = decode
 
     def __call__(self, client, message):
-        def read(path):
+        def read(path, decode=False):
             with open(path, "rb") as f:
-                return f.read()
+                data = f.read()
+                return self.decode(data) if decode and self.decode else data
         self.log("nor: %s" % ", ".join(os.path.basename(p) for p in [self.llb] + self.images))
-        client.conn.send({"LlbImageData": read(self.llb), "NorImageData": [read(p) for p in self.images]})
+        # Image2's LLB method consumes the original 8900 envelope; its image
+        # method consumes decoded Img2. Image3 needs no host-side decoding.
+        client.conn.send({"LlbImageData": read(self.llb), "NorImageData": [read(p, True) for p in self.images]})
 
 
 class KernelCacheServer:

@@ -119,7 +119,7 @@ class Emulator:
     bootrom: a dump of the profile's bootrom, or None: the emulator then starts LLB from the NOR (or boot_image)
     itself.
     dfu: hold the force-DFU GPIO so the bootrom enters DFU mode (needs the bootrom).
-    boot_image: an IMG3 image to start instead of LLB from the NOR, without a bootrom: iBSS for a restore.
+    boot_image: an IMG3 or 8900 image to start instead of LLB from the NOR, without a bootrom: iBSS for a restore.
     display: show the QEMU window instead of running headless.
     vnc: serve the screen and take input over VNC on 127.0.0.1 instead, also as a WebSocket, both on free ports
     (vnc_port, websocket_port). The app draws the screen itself this way.

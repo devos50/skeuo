@@ -60,3 +60,43 @@ def factory_nor(syscfg_entries, env):
     nor[SYSCFG_OFFSET:SYSCFG_OFFSET + len(cfg)] = cfg
     nor[NVRAM_OFFSET:NVRAM_OFFSET + NVRAM_SIZE] = nvram(env)
     return bytes(nor)
+
+
+def set_nvram_variables(path, changes):
+    """Update the newest valid bank, preserving its other variables/partitions.
+
+    Write the other bank with a newer generation, as the guest does. In 1.x,
+    restored clears boot-args; preparation reinstates the tested normal args.
+    """
+    with open(path, "r+b") as stream:
+        banks = []
+        for offset in (NVRAM_OFFSET, NVRAM_OFFSET + NVRAM_SIZE):
+            stream.seek(offset)
+            bank = bytearray(stream.read(NVRAM_SIZE))
+            if (len(bank) == NVRAM_SIZE and bank[0] == 0x5a and bank[4:9] == b"nvram"
+                    and struct.unpack_from("<I", bank, 0x10)[0] == zlib.adler32(bank[0x14:])):
+                banks.append((struct.unpack_from("<I", bank, 0x14)[0], offset, bank))
+        if not banks:
+            raise ValueError("NOR has no valid NVRAM bank")
+        generation, active, bank = max(banks, key=lambda item: item[0])
+        offset = 0x20
+        while offset + 16 <= len(bank):
+            length = struct.unpack_from("<H", bank, offset + 2)[0] * 16
+            if length < 16 or offset + length > len(bank):
+                break
+            if bank[offset + 4:offset + 16].split(b"\0")[0] == b"common":
+                env = dict(item.split(b"=", 1) for item in bytes(bank[offset + 16:offset + length]).split(b"\0")
+                           if b"=" in item)
+                env.update({key.encode(): value.encode() for key, value in changes.items()})
+                data = b"".join(key + b"=" + value + b"\0" for key, value in env.items())
+                if len(data) > length - 16:
+                    raise ValueError("NVRAM common variables do not fit")
+                bank[offset + 16:offset + length] = data.ljust(length - 16, b"\0")
+                struct.pack_into("<I", bank, 0x14, (generation + 1) & 0xffffffff)
+                struct.pack_into("<I", bank, 0x10, zlib.adler32(bank[0x14:]))
+                target = NVRAM_OFFSET + NVRAM_SIZE if active == NVRAM_OFFSET else NVRAM_OFFSET
+                stream.seek(target)
+                stream.write(bank)
+                return
+            offset += length
+        raise ValueError("NVRAM has no valid common partition")

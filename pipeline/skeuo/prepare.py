@@ -14,6 +14,9 @@ of the root filesystem image. So this changes the partitions of the restored dis
 """
 import os
 import plistlib
+import shutil
+import subprocess
+import tempfile
 
 from . import activation, hfs, nand
 
@@ -38,7 +41,34 @@ def lockdown_files(source):
 LOCKDOWND_MODE = 0o755
 
 
-def prepare(disk, workdir, device, profile, build, lockdown=None, device_certificate=None, log=print):
+def seed_legacy_data(source, data_image, build, workdir):
+    """1.x removes /private/var from the system but doesn't seed its new data volume.
+
+    Copy the original tree from the user's IPSW, retaining modes and symlinks,
+    just as make_nand_disk_1g does for a hand-built image.
+    """
+    from .firmware1g import ROOTFS_KEYS
+    if not source or not shutil.which("vfdecrypt"):
+        raise hfs.HFSError("preparing 1.x needs its IPSW root image and vfdecrypt on PATH")
+    with tempfile.TemporaryDirectory(prefix="initial-data.", dir=workdir) as work:
+        decrypted = os.path.join(work, "rootfs.dmg")
+        subprocess.run(["vfdecrypt", "-i", source, "-k", ROOTFS_KEYS[build], "-o", decrypted],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with hfs.mounted(decrypted, readonly=True) as system, hfs.mounted(data_image) as data:
+            source_var = os.path.join(system, "private/var")
+            # This is a never-booted data volume. Replace seed entries instead
+            # of following existing symlinks or overwriting read-only files.
+            for name in os.listdir(source_var):
+                dest = os.path.join(data, name)
+                if os.path.isdir(dest) and not os.path.islink(dest):
+                    shutil.rmtree(dest)
+                elif os.path.lexists(dest):
+                    os.unlink(dest)
+            shutil.copytree(source_var, data, symlinks=True, dirs_exist_ok=True)
+
+
+def prepare(disk, workdir, device, profile, build, lockdown=None, device_certificate=None, log=print,
+            initial_data=None):
     """Changes the filesystems on the disk image of a restored device that never booted. device: the bundle's
     identity, with the UDID the restore reported. profile: the device's profile. build: the firmware build. device_certificate: a PEM device certificate from Apple for the
     activation record (see activation.py)."""
@@ -53,12 +83,26 @@ def prepare(disk, workdir, device, profile, build, lockdown=None, device_certifi
             f.truncate(size * page)
         nand.copy_regions(disk, images[number], start * page, 0, size * page)
 
+    if profile.image_format == "img2":
+        log("seeding the 1.x data volume from the IPSW's /private/var")
+        seed_legacy_data(initial_data, images[DATA_PARTITION], build, workdir)
+
     log("letting SpringBoard draw in software")
     plist = plistlib.loads(hfs.read_file(images[SYSTEM_PARTITION], SPRINGBOARD_PLIST))
     plist.setdefault("EnvironmentVariables", {})["LK_ENABLE_MBX2D"] = "0"
     system_files = {SPRINGBOARD_PLIST: plistlib.dumps(plist)}
     modes = {}
-    if not lockdown:
+    legacy = profile.image_format == "img2"
+    if legacy:
+        from .firmware1g import KERNEL_PATH, patch_usb_kernel, patch_lockdownd
+        log("repairing the 1.x USB notifier")
+        system_files[KERNEL_PATH] = patch_usb_kernel(build, hfs.read_file(images[SYSTEM_PARTITION], KERNEL_PATH))
+    if legacy and not lockdown:
+        log("activating 1.x with its build-specific lockdownd repair")
+        system_files[activation.LOCKDOWND] = patch_lockdownd(
+            build, hfs.read_file(images[SYSTEM_PARTITION], activation.LOCKDOWND))
+        modes[activation.LOCKDOWND] = LOCKDOWND_MODE
+    elif not lockdown:
         system_files.update(activation.system_files(apple_device_certificate=device_certificate is not None))
         if not device_certificate:
             lockdownd = activation.patch_lockdownd(
@@ -69,7 +113,9 @@ def prepare(disk, workdir, device, profile, build, lockdown=None, device_certifi
                 modes[activation.LOCKDOWND] = LOCKDOWND_MODE
     hfs.add_files(images[SYSTEM_PARTITION], system_files, modes)
 
-    if not lockdown:
+    if legacy and not lockdown:
+        hfs.add_files(images[DATA_PARTITION], {activation.DATA_ARK: plistlib.dumps(activation.INITIAL_DATA_ARK)})
+    elif not lockdown:
         log("activating %s" % device["udid"])
         hfs.add_files(images[DATA_PARTITION],
                       activation.data_files(device["udid"], device["serial_number"], profile.product,

@@ -14,7 +14,7 @@ from . import activation, identity, nor, prepare
 from .bundle import Bundle
 from .emulator import Emulator, EmulatorError, wait_for
 from .restored import ASRServer, KernelCacheServer, NORServer, RestoreError, run_restore
-from .usb.dfu import DFU_PID, RECOVERY_PID, command, dfu_upload, enumerate_device, set_configuration, upload
+from .usb.dfu import DFU_PID, RECOVERY_PID, dfu_upload, enumerate_device, set_configuration
 from .usb.link import USBError, USBNoDevice, USBTimeout
 from .usb.mux import MuxError
 
@@ -34,35 +34,45 @@ class Steps:
 
 def boot_ramdisk(emu, link, ipsw, step, dfu):
     """dfu: upload iBSS to the bootrom's DFU mode; otherwise the emulator started it."""
+    from .usb import dfu as recovery
+    if ipsw.profile.image_format == "img2":
+        from .usb import recovery1 as recovery
+    upload, command = recovery.upload, recovery.command
     ibec = ipsw.dfu_image("iBEC")
     device_tree = ipsw.device_tree()
     ramdisk = ipsw.restore_ramdisk()
     kernel = ipsw.kernelcache()
+    if ipsw.profile.image_format == "img2":
+        from .firmware1g import patch_usb_kernel
+        kernel = patch_usb_kernel(ipsw.build, kernel)
+    recovery_pid = ipsw.device_map.get("RecoveryModeProductID", RECOVERY_PID)
 
     def to_recovery():
         if dfu:
-            enumerate_device(link, DFU_PID)
+            enumerate_device(link, ipsw.device_map.get("DFUProductID", DFU_PID))
             dfu_upload(link, ipsw.dfu_image("iBSS"))
         wait_for(lambda: "Entering recovery mode" in emu.serial(), 20, "iBSS to enter recovery mode")
 
     def ibss_loads_ibec():
-        enumerate_device(link, RECOVERY_PID)
+        enumerate_device(link, recovery_pid)
         set_configuration(link)
         upload(link, ibec)
         try:
             command(link, "go")
         except (USBNoDevice, USBTimeout):
             pass
-        wait_for(lambda: "iBEC for" in emu.serial(), 20, "iBEC to start")
+        wait_for(lambda: "iBEC for" in emu.serial() or ":: iBEC," in emu.serial(), 20, "iBEC to start")
 
     def ibec_ready():
-        enumerate_device(link, RECOVERY_PID)
+        enumerate_device(link, recovery_pid)
         set_configuration(link)
         # iBEC 3.0's devicetree command reads its first argument even when it has none, from the argument array the
         # previous command filled in. iTunes sends "setenv auto-boot false" first; without an earlier command with
         # arguments that slot is still stack fill ('stak'), which iBEC dereferences. Unlike iTunes this doesn't
         # saveenv: restored sets auto-boot back to true, but the kernel only writes NVRAM to the NOR when it reboots.
         command(link, "setenv auto-boot false")
+        if ipsw.profile.image_format == "img2":
+            command(link, "setenv boot-args rd=md0 serial=1 debug=0x8 -v")
 
     def load_device_tree():
         upload(link, device_tree)
@@ -93,9 +103,13 @@ def run_restored(emu, ipsw, log):
     desc = link.wait_for_device(timeout=RESTORED_TIMEOUT)
     log("ok    restore ramdisk on USB, %04x:%04x         %.2f s"
         % (*struct.unpack_from("<HH", desc, 8), time.monotonic() - start))
+    decode_nor = None
+    if ipsw.profile.image_format == "img2":
+        from .firmware1g import unpack_8900
+        decode_nor = unpack_8900
     handlers = {
         "SystemImageData": ASRServer(ipsw.system_image(), log=log),
-        "NORData": NORServer(*ipsw.nor_images(), log=log),
+        "NORData": NORServer(*ipsw.nor_images(), log=log, decode=decode_nor),
         "KernelCache": KernelCacheServer(ipsw.system_kernelcache(), log=log),
     }
     try:
@@ -115,6 +129,8 @@ def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certifi
     profile = ipsw.profile
     if profile.restore != "restored":
         raise EmulatorError("Skeuo can't restore the %s yet (%s)" % (profile.name, profile.restore))
+    if profile.image_format == "img2" and not shutil.which("vfdecrypt"):
+        raise EmulatorError("restoring 1.x needs vfdecrypt on PATH to seed the initial data volume")
     device = identity.generate()
     bundle = Bundle.create(bundle_path, ipsw, device, name=name, settings=settings)
     if device_certificate:
@@ -159,9 +175,14 @@ def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certifi
         work = tempfile.mkdtemp(prefix="prepare.", dir=bundle.path)
         try:
             prepare.prepare(bundle.disk, work, device, profile, ipsw.build, lockdown=lockdown,
-                            device_certificate=device_certificate, log=log)
+                            device_certificate=device_certificate, log=log,
+                            initial_data=ipsw.system_image() if profile.image_format == "img2" else None)
         finally:
             shutil.rmtree(work, ignore_errors=True)
+        if profile.image_format == "img2":
+            from .firmware1g import DEFAULT_BOOT_ARGS
+            log("setting the 1G's normal boot arguments")
+            nor.set_nvram_variables(bundle.nor, {"boot-args": DEFAULT_BOOT_ARGS, "auto-boot": "true"})
         bundle.mark_ready()
     except BaseException:
         log("restore failed; the logs are in %s" % bundle.logs)

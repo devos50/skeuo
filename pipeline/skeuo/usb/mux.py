@@ -5,13 +5,14 @@ device, and opens TCP connections to services on the device.
 The device (AppleUSBDeviceMux in iOS 2) speaks mux protocol version 1: every
 USB transfer carries one packet with an 8-byte big endian header (protocol,
 total length). Protocol 0 is the version handshake, protocol 6 carries a TCP
-header followed by data. TCP here is a simplified stream without
-retransmissions; windows are exchanged shifted right by 8 bits.
+header followed by data. Windows are exchanged shifted right by 8 bits;
+unacknowledged output is retried when the receive window stops advancing.
 """
 import plistlib
 import struct
 import sys
 import threading
+import time
 
 from .link import USBError
 
@@ -28,7 +29,7 @@ TH_RST = 0x04
 TH_ACK = 0x10
 
 RX_WINDOW = 0x20000
-MAX_SEGMENT = 0x4000
+MAX_SEGMENT = 0x4000 - MUX_HEADER.size - TCP_HEADER.size
 LOCKDOWN_PORT = 62078
 
 
@@ -45,6 +46,7 @@ class MuxConnection:
         self.tx_ack = 0
         self.tx_acked = 0
         self.tx_win = 0
+        self._unacked = bytearray()
         self.state = "connecting"
         self._rx = bytearray()
         self._cond = threading.Condition()
@@ -52,12 +54,14 @@ class MuxConnection:
         # without holding _cond during a USB transfer.
         self._tx_lock = threading.Lock()
 
-    def _send_tcp(self, flags, data=b""):
+    def _send_tcp(self, flags, data=b"", seq=None):
         with self._tx_lock:
             with self._cond:
-                header = TCP_HEADER.pack(self.sport, self.dport, self.tx_seq, self.tx_ack,
+                header = TCP_HEADER.pack(self.sport, self.dport, self.tx_seq if seq is None else seq, self.tx_ack,
                                          (TCP_HEADER.size // 4) << 4, flags, RX_WINDOW >> 8, 0, 0)
-                self.tx_seq += len(data)
+                if seq is None:
+                    self.tx_seq += len(data)
+                    self._unacked.extend(data)
             self.mux._send(MUX_TCP, header + data)
 
     def _input(self, flags, seq, ack, win, data):
@@ -74,8 +78,14 @@ class MuxConnection:
                 send_ack = True
             elif self.state == "connected":
                 self.tx_win = win << 8
+                # usbmuxd acknowledges every device packet, including a pure
+                # window update. Match that behavior for the older device stack.
+                send_ack = True
                 if flags & TH_ACK:
-                    self.tx_acked = ack
+                    advanced = (ack - self.tx_acked) & 0xFFFFFFFF
+                    if advanced <= len(self._unacked):
+                        del self._unacked[:advanced]
+                        self.tx_acked = ack
                 if data:
                     self.tx_ack += len(data)
                     self._rx += data
@@ -96,16 +106,35 @@ class MuxConnection:
     def _in_flight(self):
         return (self.tx_seq - self.tx_acked) & 0xFFFFFFFF
 
-    def send(self, data):
+    def send(self, data, timeout=60):
         """Sends data, waiting while the device's receive window is full."""
-        for offset in range(0, len(data), MAX_SEGMENT):
-            segment = data[offset:offset + MAX_SEGMENT]
+        offset = 0
+        deadline = time.monotonic() + timeout
+        while offset < len(data):
             with self._cond:
-                self._cond.wait_for(lambda: self.state != "connected"
-                                    or self._in_flight() + len(segment) <= self.tx_win)
+                ready = self._cond.wait_for(lambda: self.state != "connected"
+                                           or self._in_flight() < self.tx_win,
+                                           min(0.5, max(0, deadline - time.monotonic())))
                 if self.state != "connected":
                     raise MuxError("connection closed")
+                if not ready:
+                    if time.monotonic() >= deadline:
+                        raise MuxError("timed out waiting for port %d's receive window" % self.dport)
+                    retry = bytes(self._unacked[:MAX_SEGMENT])
+                    seq = self.tx_acked
+                else:
+                    retry = None
+                    # 1.x can advertise less than MAX_SEGMENT. Waiting for a full
+                    # segment leaves both peers waiting with usable space.
+                    size = min(MAX_SEGMENT, self.tx_win - self._in_flight(), len(data) - offset)
+                    segment = data[offset:offset + size]
+            if retry is not None:
+                if retry:
+                    self._send_tcp(TH_ACK, retry, seq=seq)
+                continue
             self._send_tcp(TH_ACK, segment)
+            offset += size
+            deadline = time.monotonic() + timeout
 
     def recv(self, bufsize, timeout=None):
         """Returns up to bufsize bytes as soon as some are available, or b""
@@ -181,10 +210,10 @@ class MuxDevice:
     def _send(self, protocol, payload):
         packet = MUX_HEADER.pack(protocol, MUX_HEADER.size + len(payload)) + payload
         with self._send_lock:
-            self.link.bulk_write(self.out_ep, packet)
+            self.link.bulk_write(self.out_ep, packet, timeout=30)
             # The device needs the transfer to end to see the packet.
             if len(packet) % self.out_mps == 0:
-                self.link.bulk_write(self.out_ep, b"")
+                self.link.bulk_write(self.out_ep, b"", timeout=30)
 
     def _read_loop(self):
         buf = bytearray()

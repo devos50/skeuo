@@ -42,7 +42,9 @@ class IPSW:
             raise IPSWError("%s is firmware for %s; supported: %s"
                             % (path, self.product, ", ".join(sorted(devices.PROFILES))))
         self.profile = devices.get(self.product)
-        self.board = self.plist["DeviceMap"][0]["BoardConfig"]
+        self.device_map = next((entry for entry in self.plist["DeviceMap"]
+                                if entry["BoardConfig"] == self.profile.board), self.plist["DeviceMap"][0])
+        self.board = self.device_map["BoardConfig"]
         if self.board != self.profile.board:
             raise IPSWError("%s is firmware for board %s, not the %s's %s"
                             % (path, self.board, self.profile.name, self.profile.board))

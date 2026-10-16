@@ -27,6 +27,9 @@ def enumerate_device(link, expected_pid, timeout=20):
     pid = struct.unpack_from("<H", desc, 10)[0]
     if pid != expected_pid:
         raise DeviceError("expected product 0x%04x, got 0x%04x" % (expected_pid, pid))
+    # OS 1.x initializes its bulk packet sizes in SET_ADDRESS. The emulated
+    # point-to-point link doesn't route addresses, but the guest still needs it.
+    link.ctrl_transfer(0x00, 0x05, 1, 0, timeout=5)
     return link.get_string(desc[16])
 
 
