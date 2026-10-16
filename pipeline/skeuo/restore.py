@@ -131,6 +131,9 @@ def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certifi
         raise EmulatorError("Skeuo can't restore the %s yet (%s)" % (profile.name, profile.restore))
     if profile.image_format == "img2" and not shutil.which("vfdecrypt"):
         raise EmulatorError("restoring 1.x needs vfdecrypt on PATH to seed the initial data volume")
+    if profile.product == "iPod1,1" and ipsw.build == "4B1":
+        from . import ssh1g
+        ssh1g.check_available()
     device = identity.generate()
     bundle = Bundle.create(bundle_path, ipsw, device, name=name, settings=settings)
     if device_certificate:
@@ -176,7 +179,8 @@ def restore(ipsw, bundle_path, qemu, bootrom=None, lockdown=None, device_certifi
         try:
             prepare.prepare(bundle.disk, work, device, profile, ipsw.build, lockdown=lockdown,
                             device_certificate=device_certificate, log=log,
-                            initial_data=ipsw.system_image() if profile.image_format == "img2" else None)
+                            initial_data=ipsw.system_image() if profile.image_format == "img2" else None,
+                            ssh_directory=os.path.join(bundle.path, "ssh"))
         finally:
             shutil.rmtree(work, ignore_errors=True)
         if profile.image_format == "img2":

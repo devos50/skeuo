@@ -1,7 +1,8 @@
 # Skeuo with more than one device: plan
 
-Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). USB checkpoints 1 and 2 reached
-(2026-10-16): unpaired lockdown queries and a factory-new 1.1.5 IPSW restore to the home screen.
+Status: agreed (2026-10-14). Steps 1 and 2 of the order of work done (2026-10-15). USB checkpoints 1, 2 and 3 reached
+(2026-10-16): unpaired lockdown queries, a factory-new 1.1.5 IPSW restore to the home screen, and an
+automatically installed SSH server with a working root shell over USB.
 SSLv3 sessions need a compatible host TLS library. The first new device is the
 iPod touch 1G (S5L8900, `n45ap`, `iPod1,1`), whose emulator lives on the
 [`ipod_touch_1g` branch of devos50/qemu-ios](https://github.com/devos50/qemu-ios/tree/ipod_touch_1g).
@@ -611,6 +612,79 @@ USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 ideviceinfo -s
 SSH has not been started, and no third-party binary or package has been downloaded. Stop for checkpoint review
 before checkpoint 3; the SSH server source remains Martijn's decision.
 
+
+### SSH over USB on the 1G (checkpoint 3, 2026-10-16)
+
+Runtime/build-materials commit: `9be661b`.
+
+Martijn approved downloading/building Dropbear from upstream source, then requested that restoring the 1G install
+SSH automatically. The implementation is scoped to iPod1,1 1.1.5 (4B1); automatic SSH on the 2G is a later step.
+
+The older 2G setup was a separate hand-built image (`generate_nand_it2g`, Claude session 2026-09-27), with
+Telesphoreo OpenSSH 5.2p1/OpenSSL 0.9.8k, Bash and coreutils. launchd starts `sshd -i` on port 22, and `iproxy`
+forwards it over usbmux. That setup was not included in Skeuo's restore pipeline; the current restored 2.1.1
+bundle has no sshd. The USB transport can be reused without depending on lockdown SSL.
+
+What is implemented:
+
+- `ssh1g.py` installs source-built Dropbear 2026.94 and Dash 0.5.13.5 as `/usr/sbin/dropbear` and `/bin/sh` during
+  restore preparation. No prebuilt third-party device package or Apple runtime/startup object is used. The small
+  executables dynamically load the restored device's own libSystem 94 and libgcc_s. The source archives,
+  compatibility layer, checksums and clean build recipe are in `packaging/ssh1g/`; licenses and complete source
+  accompany the runtime assets and are included by the existing app packaging script.
+- A clean recipe build reproduced both checked-in executables byte for byte. Clang 21 compiles ARMv6 code using
+  the installed macOS 13.3 SDK's C headers; cctools-port at `904de2a71d4da6a9b30d2efaf912a10ddc7d9ddb` links it
+  against libraries extracted from the user's IPSW. Nothing from the extracted firmware/SDK is committed.
+- The startup layer implements the classic dyld lazy-binding ABI and invokes the device library's Mach/thread
+  and delayed module initialization hooks. `-ffixed-r9` is required: using r9 as a general register caused crashes
+  in signal setup because the 1.x thread runtime uses it. The build selects the legacy inode/stat ABI, supplies
+  the later `stpncpy`/fd-set helper locally, and disables SDK-only F_DUPFD_CLOEXEC and unavailable login accounting.
+- Dropbear uses its traditional privileged server model because the new setresgid-based pre-auth separation is
+  unavailable on 1.x. Public-key login, Ed25519 host keys and curve25519 key exchange work with the current host
+  SSH client. Password login, agent/TCP forwarding and the larger optional crypto families are disabled.
+- Each restored bundle gets a private client identity at `ssh/id_ed25519` (mode 0600, directory 0700). Only that
+  client's public key is installed as `/var/root/.ssh/authorized_keys`. A distinct host identity is generated
+  offline at `ssh/host_ed25519`, converted to Dropbear's format and installed on the data partition. This avoids
+  relying on the guest flushing a newly generated host key before a short test powers off.
+- The existing seeded `/var/root` and its `.ssh` directory are set to root:wheel and mode 0700. Copying the seed
+  with ownership ignored left the host UID on existing directories, which Dropbear correctly refused for login.
+  The authorized key and host key are root-owned with mode 0600; strict permission checks remain enabled.
+- launchd listens on device IPv4 loopback port 22 and invokes Dropbear in inetd mode when a connection arrives.
+  The existing `skeuo run` usbmuxd and Homebrew `iproxy` carry SSH over USB. Neither Wi-Fi nor a lockdown SSL
+  session is involved. No emulator or shared USB code changes were needed for checkpoint 3.
+- `pipeline/tools/1g/install_ssh.py` installs the same payload into an already restored, powered-off 4B1 bundle,
+  taking its lock and refusing suspended state. Reinstalling retains the bundle's generated client/host identities.
+
+Validation: 14 Python tests pass (the optional QEMU hardware test is skipped because no hardware changed).
+New tests cover key reuse and permissions, Ed25519 private-key conversion/public-key agreement, distinct client
+and host identities, and rejection of corrupt keys. The production installer on a checkpoint-2 clone passes root
+command execution, interactive PTY login, a 65,792-byte encrypted bidirectional round trip, and unauthorized-key
+rejection on a second cold boot. Ordinary remote commands use non-PTY SSH; the PTY test holds stdin open as a
+terminal does. A forced PTY with immediate stdin EOF can close early on this stack.
+The final public `skeuo restore` command created `build/usb-1g/checkpoint3-final-verified` from an empty disk
+and factory NOR. Restored returned status 0 at 367.2 seconds; preparation installed SSH, generated both identities,
+updated the boot arguments and marked the bundle ready. No hand installation was needed on that bundle.
+Two normal `skeuo run` cold boots each passed root command execution, PTY command execution, an interactive
+root shell (`SSH_TTY=/dev/ttyp1`), the 65,792-byte exact round trip and unauthorized-key rejection. The second
+boot used the same trusted host key. Both CLI runs exited 0, and the captured UI reaches the home screen.
+
+Generated evidence: `build/usb-1g/checkpoint3-final-verified-restore.log`,
+`checkpoint3-final-verified-ssh-first.log`, `checkpoint3-final-verified-ssh-second.log`, and the bundle's
+`restore-logs/` and `ssh-screen.png`. The existing `build/usb-1g/checkpoint2-final-verified` bundle was also
+upgraded using the public `install_ssh.py` tool. Generated bundles and private keys remain untracked.
+
+To connect after restoring and starting a 4B1 bundle, in separate terminals:
+
+```sh
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 iproxy 2222 22
+ssh -p 2222 -i /path/to/bundle/ssh/id_ed25519 -o IdentitiesOnly=yes \
+  -o UserKnownHostsFile=/path/to/bundle/ssh/known_hosts root@127.0.0.1
+```
+
+Accept that bundle's host key on its first connection (its public key is in `ssh/host_ed25519.pub`). Keep `ssh/`
+with the bundle. This checkpoint installs a shell and its builtins, not coreutils, SCP or SFTP. Stop for review
+at checkpoint 3; do not start 2G SSH integration or push without Martijn's request.
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -662,8 +736,11 @@ before checkpoint 3; the SSH server source remains Martijn's decision.
    pairs successfully but fails the SSLv3 session handshake; see "USB on the 1G".
    Factory restore checkpoint 2 reached (2026-10-16): the actual 1.1.5 IPSW restores from empty disk/factory NOR,
    automatically prepares the filesystems and NVRAM, then boots to SpringBoard through `skeuo run` with USB
-   queries working. See "IPSW restore on the 1G". **Stop here for checkpoint review; checkpoint 3 (SSH) has not
-   started.**
+   queries working. See "IPSW restore on the 1G".
+   SSH checkpoint 3 reached (2026-10-16): restore automatically installs source-built Dropbear, a POSIX shell,
+   launchd socket activation and per-bundle keys. A factory-restored device passes root commands, interactive
+   PTY login and data round trips over USB on two cold boots. See "SSH over USB on the 1G".
+   **Stop here for checkpoint review.** Automatic 2G SSH installation remains a later step.
 6. **App**: device picker, 1G frame, capabilities in the edit dialog, the S5L8900 bootrom slot.
 7. Later: Wi-Fi on the 1G (finishing the 1G branch's SDIO work), other firmware versions, and `supported` once the support policy's
    bar is met.

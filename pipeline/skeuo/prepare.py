@@ -68,7 +68,7 @@ def seed_legacy_data(source, data_image, build, workdir):
 
 
 def prepare(disk, workdir, device, profile, build, lockdown=None, device_certificate=None, log=print,
-            initial_data=None):
+            initial_data=None, ssh_directory=None):
     """Changes the filesystems on the disk image of a restored device that never booted. device: the bundle's
     identity, with the UDID the restore reported. profile: the device's profile. build: the firmware build. device_certificate: a PEM device certificate from Apple for the
     activation record (see activation.py)."""
@@ -127,6 +127,11 @@ def prepare(disk, workdir, device, profile, build, lockdown=None, device_certifi
         log("installing the Lockdown directory (%d files)" % len(files))
         hfs.add_files(images[DATA_PARTITION],
                       {os.path.join(LOCKDOWN_IN_DATA, rel): data for rel, data in files.items()})
+
+    if profile.product == "iPod1,1" and build == "4B1" and ssh_directory:
+        from . import ssh1g
+        log("installing Dropbear and a POSIX shell for USB SSH")
+        ssh1g.install(images[SYSTEM_PARTITION], images[DATA_PARTITION], ssh_directory)
 
     log("writing the changed partitions into the disk")
     for number, image in images.items():

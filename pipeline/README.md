@@ -38,7 +38,9 @@ sold through the iTunes Store, and its IPSW was never on a public URL, so a 3.0 
    ramdisk and kernelcache, then `restored` partitions the NAND, writes the root filesystem it gets through asr and
    flashes the NOR images from the IPSW (`restore.py`, `restored.py`). This takes about a minute.
 3. Prepares the restored filesystems for the emulator (`prepare.py`): SpringBoard draws in software
-   (`LK_ENABLE_MBX2D=0`), and the device is activated (`activation.py`).
+   (`LK_ENABLE_MBX2D=0`), and the device is activated (`activation.py`). For iPod1,1 1.1.5, this also seeds the
+   initial data tree, repairs its USB kernel notifier, and installs the SSH server, shell and per-bundle keys
+   described below. This firmware's NOR programming takes about six minutes.
 
 The bundle keeps the disk as `disk.img`, a sparse raw disk image that macOS can mount
 (`hdiutil attach -imagekey diskimage-class=CRawDiskImage disk.img`). While the emulator runs, the NAND pages iOS
@@ -164,3 +166,32 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
 - After a resume, the guest's calendar lags by the time the device was suspended (until it reboots).
 - 2.2's AMFI doesn't report the boot arguments (3.0's and 4.0's log that enforcement is off); whether unsigned
   binaries run on 2.2 is untested.
+
+## USB SSH on the iPod touch 1G
+
+Restoring iPod1,1 1.1.5 (4B1) also installs source-built Dropbear and a POSIX shell. It creates a separate
+client and host Ed25519 key for each bundle in `<bundle>/ssh/`; the client private key stays on the host.
+Root login uses the generated key. No password or lockdown SSL session is needed. With the bundle running,
+use separate terminals:
+
+```sh
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 iproxy 2222 22
+ssh -p 2222 -i /path/to/bundle/ssh/id_ed25519 \
+  -o IdentitiesOnly=yes -o UserKnownHostsFile=/path/to/bundle/ssh/known_hosts root@127.0.0.1
+```
+
+The first SSH connection asks to accept that bundle's host key; its public key is also saved at
+`<bundle>/ssh/host_ed25519.pub`. Both keys remain the same across cold boots. Keep the `ssh/` directory with
+the bundle. launchd listens on device loopback port 22 and starts Dropbear on demand. Skeuo's usbmuxd and
+`iproxy` carry the connection over the emulated USB link.
+
+For a 4B1 bundle restored before this preparation step, stop it and run from the repository root:
+
+```sh
+python3 pipeline/tools/1g/install_ssh.py /path/to/bundle
+```
+
+The shell has POSIX builtins; coreutils, SCP and SFTP are not installed by this checkpoint. The 2G restore
+path does not install SSH yet. Source/build instructions and compatibility details are in
+[`packaging/ssh1g/README.md`](../packaging/ssh1g/README.md). The runtime assets include licenses and their full
+free-software source kit; no Apple library or firmware is distributed with them.
