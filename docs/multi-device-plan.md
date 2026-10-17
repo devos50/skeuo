@@ -685,6 +685,31 @@ Accept that bundle's host key on its first connection (its public key is in `ssh
 with the bundle. This checkpoint installs a shell and its builtins, not coreutils, SCP or SFTP. Stop for review
 at checkpoint 3; do not start 2G SSH integration or push without Martijn's request.
 
+### SSH over USB on the 2G (2026-10-17)
+
+Restore now installs the same Dropbear/Dash setup on iPod2,1 2.1.1, 2.2 and 4.0 (3.0 untested: its IPSW isn't
+public). `ssh1g.py` became `ssh.py`, with per-product assets (`ssh1g_assets`, `ssh2g_assets`) and the tested builds;
+`pipeline/tools/install_ssh.py` (moved from `tools/1g/`) upgrades either device's powered-off bundles.
+
+- The 1G binaries can't be reused. On 2.x, unsigned pages are killed (`CODESIGNING ... INVALID PAGE`), and once
+  signed, Dropbear refused `/var/root`: 2.x's libSystem 111 only has the 64-bit-inode stat ABI under plain names,
+  so every 1.x-ABI `stat` was misread. The 2G build uses the SDK's arm defaults (64-bit inodes, UNIX03), links
+  against 2.1.1's libSystem/libgcc from a restored bundle, and skips the 1.x crt initialization (dyld runs
+  libSystem's initializer from 2.0). The classic lazy-binding `crt.S` works unchanged through 4.0.
+- `packaging/ssh1g/codesign.py` appends a deterministic ad-hoc SHA-1 signature (CodeDirectory 0x20001); the 2.x
+  kernel doesn't understand the SHA-256 ones current linkers write. A unit test recomputes its page hashes.
+- 2.2's AMFI ignored `amfi=0xff cs_enforcement_disable=1` for ad-hoc signatures. `amfi_allow_any_signature=1`
+  (already in the emulator's 2.1.1 defaults) is now part of `activation.BOOT_ARGS`, which 2.2, 3.0 and 4.0 boot
+  with. That changes those bundles' emulator arguments, so a device suspended before it needs one cold boot.
+- The 2G binaries were built with Apple Clang 21.0.0 and the macOS 14.5 SDK; a clean rebuild matched byte for
+  byte. Building the 1G with the modified recipe on the same machine matched the unmodified recipe byte for byte
+  (both differ from the checked-in 1G binaries, which used the 13.3 SDK).
+
+Validation: 18 Python tests pass. Fresh public `skeuo restore`s of 2.1.1, 2.2 and 4.0 installed SSH. On each,
+two `skeuo run` cold boots passed root command execution, a PTY command, an interactive shell
+(`SSH_TTY=/dev/ttys000`), an exact 65,792-byte round trip and unauthorized-key rejection; the second boot
+checked the host key strictly against the first's. Generated bundles and logs are in `build/ssh-2g/` (untracked).
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device

@@ -3,7 +3,7 @@
 As of 2026-10-16, USB checkpoints 1, 2 and 3 are complete. The current state and evidence are in
 [multi-device-plan.md](multi-device-plan.md), especially “IPSW restore on the 1G” and “SSH over USB on the 1G”.
 The USB kickoff prompt is preserved as historical context; its descriptions of missing functionality predate
-these checkpoints. Automatic SSH installation for the 2G is a possible next task, not implemented yet.
+these checkpoints. Restore also installs SSH on the 2G (2.1.1, 2.2, 4.0) since 2026-10-17.
 
 From an existing Skeuo checkout on the other Mac:
 
@@ -30,7 +30,7 @@ PYTHONPATH=pipeline python3 -m skeuo run /path/to/new-bundle --power-off \
 ```
 
 NOR programming takes about six minutes. Restore installs the SSH server, shell and per-bundle keys
-automatically. See [USB SSH instructions](../pipeline/README.md#usb-ssh-on-the-ipod-touch-1g) for connecting.
+automatically. See [USB SSH instructions](../pipeline/README.md#usb-ssh) for connecting.
 
 Generated device storage, firmware, logs, host build products and private keys are excluded from Git. To use
 the exact device state tested here instead of restoring anew, privately copy the entire powered-off bundle:

@@ -8,6 +8,7 @@ Makes a freshly restored device boot to SpringBoard in the emulator, by changing
 - With a Lockdown source instead, the Lockdown directory of a device that Apple activated (activation record, data
   ark, device keys, pair records) goes to /private/var/root/Library/Lockdown. That only works for the identity of
   that device.
+- On firmware ssh.py has tested, Dropbear, a POSIX shell and per-bundle keys are installed for SSH over USB.
 
 The restored image can't be changed before the restore instead: asr on the restore ramdisk checks Apple's signature
 of the root filesystem image. So this changes the partitions of the restored disk image in place.
@@ -18,7 +19,7 @@ import shutil
 import subprocess
 import tempfile
 
-from . import activation, hfs, nand
+from . import activation, hfs, nand, ssh
 
 SPRINGBOARD_PLIST = "/System/Library/LaunchDaemons/com.apple.SpringBoard.plist"
 LOCKDOWN_IN_ROOTFS = "/private/var/root/Library/Lockdown"
@@ -128,10 +129,9 @@ def prepare(disk, workdir, device, profile, build, lockdown=None, device_certifi
         hfs.add_files(images[DATA_PARTITION],
                       {os.path.join(LOCKDOWN_IN_DATA, rel): data for rel, data in files.items()})
 
-    if profile.product == "iPod1,1" and build == "4B1" and ssh_directory:
-        from . import ssh1g
+    if ssh_directory and ssh.supported(profile.product, build):
         log("installing Dropbear and a POSIX shell for USB SSH")
-        ssh1g.install(images[SYSTEM_PARTITION], images[DATA_PARTITION], ssh_directory)
+        ssh.install(profile.product, images[SYSTEM_PARTITION], images[DATA_PARTITION], ssh_directory)
 
     log("writing the changed partitions into the disk")
     for number, image in images.items():

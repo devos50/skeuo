@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Build the 1G SSH assets from supplied source archives and the user's IPSW.
+"""Build the SSH assets from supplied source archives and the user's firmware.
 
-No downloads or system-wide installs. See README.md for inputs and provenance.
+For the iPod touch 1G, the device libraries come from the user's 1.1.5 IPSW; for the 2G, from a restored
+iPhone OS 2.1.1 bundle (whose root filesystem is already decrypted). No downloads or system-wide installs.
+See README.md for inputs and provenance.
 """
 import argparse
 import hashlib
@@ -16,9 +18,41 @@ import tarfile
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / 'pipeline'))
-from skeuo import hfs
+from skeuo import hfs, nand
+from skeuo.bundle import Bundle
 from skeuo.firmware1g import ROOTFS_KEYS
 from skeuo.ipsw import IPSW
+import codesign
+
+LIBRARIES = ('libSystem.B.dylib', 'libgcc_s.1.dylib')
+TARGETS = {'1g': ('ssh1g_assets', 'armv6-apple-ios1.0'), '2g': ('ssh2g_assets', 'armv6-apple-ios2.0')}
+
+
+def ipsw_libraries(path, work, libdir, run, error):
+    ipsw = IPSW(path, str(work / 'ipsw'))
+    if ipsw.product != 'iPod1,1' or ipsw.build != '4B1':
+        error('this build needs the iPod1,1 1.1.5 (4B1) IPSW')
+    decrypted = work / 'system.dmg'
+    run(['vfdecrypt', '-i', ipsw.system_image(), '-k', ROOTFS_KEYS['4B1'], '-o', decrypted])
+    with hfs.mounted(str(decrypted), readonly=True) as root:
+        for name in LIBRARIES:
+            shutil.copyfile(Path(root) / 'usr/lib' / name, libdir / name)
+
+
+def bundle_libraries(path, work, libdir, error):
+    bundle = Bundle.open(path)
+    if bundle.profile.product != 'iPod2,1' or bundle.info['firmware']['build'] != '5F138':
+        error('this build needs a restored iPod2,1 2.1.1 (5F138) bundle')
+    page = bundle.profile.nand.bytes_per_page
+    start, size = {n: (s, z) for n, s, z in nand.partitions(bundle.profile.nand, bundle.disk)}[1]
+    image = work / 'system.img'
+    with open(image, 'wb') as stream:
+        stream.truncate(size * page)
+    # Read only what is folded into disk.img; the bundle is not changed.
+    nand.copy_regions(bundle.disk, str(image), start * page, 0, size * page)
+    with hfs.mounted(str(image), readonly=True) as root:
+        for name in LIBRARIES:
+            shutil.copyfile(Path(root) / 'usr/lib' / name, libdir / name)
 
 
 def source_kit(output):
@@ -38,20 +72,26 @@ def source_kit(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--ipsw', required=True)
+    firmware = parser.add_mutually_exclusive_group(required=True)
+    firmware.add_argument('--ipsw', help='iPod1,1 1.1.5 IPSW: build the 1G assets')
+    firmware.add_argument('--bundle', help='powered-off iPod2,1 2.1.1 bundle: build the 2G assets')
     parser.add_argument('--dropbear-source', required=True)
     parser.add_argument('--dash-source', required=True)
     parser.add_argument('--ld', required=True)
     parser.add_argument('--sdk', required=True)
     parser.add_argument('--work', required=True, help='new scratch directory')
-    parser.add_argument('--output', default=str(REPO / 'pipeline/skeuo/ssh1g_assets'))
+    parser.add_argument('--output', help='default: the pipeline asset directory for the device')
     args = parser.parse_args()
+    target = '1g' if args.ipsw else '2g'
+    assets, triple = TARGETS[target]
+    if not args.output:
+        args.output = str(REPO / 'pipeline/skeuo' / assets)
     work = Path(args.work).resolve()
     work.mkdir(parents=True)  # refuse to reuse an earlier build
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, SKEUO_SSH_SDK=str(Path(args.sdk).resolve()),
-               SKEUO_SSH_LD=str(Path(args.ld).resolve()))
+               SKEUO_SSH_LD=str(Path(args.ld).resolve()), SKEUO_SSH_TARGET=target)
     log = open(work / 'build.log', 'w')
 
     def run(command, cwd=work, overrides=None):
@@ -71,16 +111,12 @@ def main():
             archive.extractall(work, filter='data')
         if not (work / name / 'configure').is_file():
             parser.error('expected configured release source: ' + name)
-    ipsw = IPSW(args.ipsw, str(work / 'ipsw'))
-    if ipsw.product != 'iPod1,1' or ipsw.build != '4B1':
-        parser.error('this build needs the iPod1,1 1.1.5 (4B1) IPSW')
-    decrypted = work / 'system.dmg'
-    run(['vfdecrypt', '-i', ipsw.system_image(), '-k', ROOTFS_KEYS['4B1'], '-o', decrypted])
     libdir = work / 'sysroot/usr/lib'
     libdir.mkdir(parents=True)
-    with hfs.mounted(str(decrypted), readonly=True) as root:
-        for name in ('libSystem.B.dylib', 'libgcc_s.1.dylib'):
-            shutil.copyfile(Path(root) / 'usr/lib' / name, libdir / name)
+    if args.ipsw:
+        ipsw_libraries(args.ipsw, work, libdir, run, parser.error)
+    else:
+        bundle_libraries(args.bundle, work, libdir, parser.error)
     for name in ('cc.py', 'crt.S', 'compat.c'):
         shutil.copyfile(HERE / name, work / name)
     (work / 'cc.py').chmod(0o755)
@@ -108,10 +144,13 @@ def main():
     cfg.write_text(cfg.read_text().replace('#define HAVE_F_DUPFD_CLOEXEC 1', '#define HAVE_F_DUPFD_CLOEXEC 0'))
     run(['make', '-j6'], cwd=dash)
     for name, binary in [('dropbear', dropbear / 'dropbear'), ('dash', dash / 'src/dash')]:
-        shutil.copyfile(binary, output / name)
+        data = binary.read_bytes()
+        if target == '2g':
+            data = codesign.sign(data, name)
+        (output / name).write_bytes(data)
     hashes = {name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in ('dropbear', 'dash')}
     (output / 'manifest.json').write_text(json.dumps({'dropbear': '2026.94', 'dash': '0.5.13.5',
-                                                   'target': 'armv6-apple-ios1.0', 'sha256': hashes}, indent=2) + '\n')
+                                                   'target': triple, 'sha256': hashes}, indent=2) + '\n')
     source_kit(output)
     print('Built SSH assets in', output, '; log:', work / 'build.log')
 

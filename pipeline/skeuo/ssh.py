@@ -1,4 +1,8 @@
-"""SSH for the restored 4B1 system: source-built Dropbear and a POSIX shell.
+"""SSH over USB for restored devices: source-built Dropbear and a POSIX shell.
+
+Each product has its own build of the same sources (packaging/ssh1g): iPhone OS 1.x and 2.x+ have
+incompatible stat/inode ABIs, and 2.x+ needs a code signature. BUILDS lists the firmware they were
+tested on.
 
 Only the client public key enters the guest. The client private key stays in the bundle's
 ssh/ directory. A separate host key is generated during preparation and
@@ -16,28 +20,36 @@ import subprocess
 
 from . import hfs
 
-ASSETS = Path(__file__).with_name('ssh1g_assets')
+ASSETS = {'iPod1,1': Path(__file__).with_name('ssh1g_assets'),
+          'iPod2,1': Path(__file__).with_name('ssh2g_assets')}
+# 2G 3.0 (7A341) is not publicly downloadable and has not been tested.
+BUILDS = {'iPod1,1': {'4B1'}, 'iPod2,1': {'5F138', '5G77a', '8A293'}}
 DAEMON = '/System/Library/LaunchDaemons/org.skeuo.dropbear.plist'
 
 
-def payloads():
+def supported(product, build):
+    return build in BUILDS.get(product, ())
+
+
+def payloads(product):
+    assets = ASSETS[product]
     try:
-        manifest = json.loads((ASSETS / 'manifest.json').read_text())
+        manifest = json.loads((assets / 'manifest.json').read_text())
     except (OSError, ValueError) as exc:
-        raise hfs.HFSError('1G SSH assets are missing; see packaging/ssh1g/README.md') from exc
+        raise hfs.HFSError('SSH assets for %s are missing; see packaging/ssh1g/README.md' % product) from exc
     files = {}
     for name in ('dropbear', 'dash'):
-        data = (ASSETS / name).read_bytes()
+        data = (assets / name).read_bytes()
         if hashlib.sha256(data).hexdigest() != manifest['sha256'][name]:
-            raise hfs.HFSError('1G SSH asset checksum mismatch: ' + name)
+            raise hfs.HFSError('SSH asset checksum mismatch: %s for %s' % (name, product))
         files[name] = data
     return files
 
 
-def check_available():
-    payloads()
+def check_available(product):
+    payloads(product)
     if not shutil.which('ssh-keygen'):
-        raise hfs.HFSError('1G SSH preparation needs ssh-keygen on PATH')
+        raise hfs.HFSError('SSH preparation needs ssh-keygen on PATH')
 
 
 def client_key(directory):
@@ -48,7 +60,7 @@ def client_key(directory):
     key = directory / 'id_ed25519'
     if not key.exists():
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '',
-                        '-C', 'Skeuo 1G USB SSH', '-f', str(key)], check=True)
+                        '-C', 'Skeuo USB SSH', '-f', str(key)], check=True)
     os.chmod(key, 0o600)
     return subprocess.run(['ssh-keygen', '-y', '-P', '', '-f', str(key)],
                           capture_output=True, check=True).stdout.rstrip() + b'\n'
@@ -59,7 +71,7 @@ def dropbear_host_key(directory):
     key = Path(directory) / 'host_ed25519'
     if not key.exists():
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '',
-                        '-C', 'Skeuo 1G host', '-f', str(key)], check=True)
+                        '-C', 'Skeuo host', '-f', str(key)], check=True)
     os.chmod(key, 0o600)
     return openssh_to_dropbear(key.read_bytes())
 
@@ -118,8 +130,8 @@ def launch_daemon():
     })
 
 
-def install(system_image, data_image, key_directory):
-    files = payloads()
+def install(product, system_image, data_image, key_directory):
+    files = payloads(product)
     public_key = client_key(key_directory)
     host_key = dropbear_host_key(key_directory)
     hfs.add_files(system_image, {'/usr/sbin/dropbear': files['dropbear'], '/bin/sh': files['dash'],

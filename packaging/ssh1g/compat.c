@@ -12,6 +12,10 @@ int __darwin_check_fd_set_overflow(int fd, const void *set, int unlimited) {
     (void)set; (void)unlimited;
     return fd >= 0 && fd < 1024;
 }
+#if SKEUO_LIBSYSTEM_INITIALIZES
+/* From iPhone OS 2.0, dyld runs libSystem's own initializer before start. */
+void skeuo_init(void) {}
+#else
 /* libSystem 94 leaves Mach/thread and module initialization to crt1. */
 extern void (*mach_init_routine)(void);
 extern void (*_cthread_init_routine)(void);
@@ -23,3 +27,4 @@ void skeuo_init(void) {
     if (_dyld_func_lookup("__dyld_make_delayed_module_initializer_calls", (void **)&initialize)
         && initialize) initialize();
 }
+#endif

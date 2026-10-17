@@ -1,11 +1,12 @@
-# SSH assets for iPod1,1 1.1.5 (4B1)
+# SSH assets for the iPod touch 1G and 2G
 
-Restore installs these assets automatically for this product/build. Other profiles retain their existing
-preparation. The assets are source-built free software: Dropbear 2026.94 and Dash 0.5.13.5, plus our small
+Restore installs these assets automatically on iPod1,1 1.1.5 (4B1) and iPod2,1 2.1.1, 2.2 and 4.0
+(`pipeline/skeuo/ssh.py`). This directory builds both devices' assets from the same sources; only the target
+ABI, the device libraries linked against and the code signature differ (see "The 2G build" below). The assets are source-built free software: Dropbear 2026.94 and Dash 0.5.13.5, plus our small
 ARMv6 startup/compatibility layer. No Apple library, firmware, SDK, startup object or device image is shipped.
 The executables dynamically load the device's own libSystem 94 and libgcc_s.
 
-The runtime payloads and SHA-256 manifest live in `pipeline/skeuo/ssh1g_assets/`; packaging copies that directory
+The runtime payloads and SHA-256 manifest live in `pipeline/skeuo/ssh1g_assets/` (2G: `ssh2g_assets/`); packaging copies that directory
 with the pipeline. Licenses and the complete corresponding source kit accompany the payloads. `sources/` here
 contains the build inputs. Dropbear's archive is the upstream release; Dash's archive is `make dist` from its
 upstream v0.5.13.5 tag, with generated configure files (no target source changes).
@@ -64,3 +65,39 @@ decrypted firmware in the work directory must never be copied into the source ki
 - The shell provides POSIX builtins and job control. This checkpoint does not install coreutils, SCP or SFTP.
 
 Changes to these assets need an actual 1.1.5 USB login test, including an interactive PTY and a second cold boot.
+
+## The 2G build
+
+The 2G assets link against iPhone OS 2.1.1's libSystem 111 and libgcc_s, taken from a restored, powered-off 2.1.1
+bundle (the IPSW's root filesystem is encrypted; the restored disk holds it decrypted). Pass `--bundle` instead of
+`--ipsw`; the default output is then `pipeline/skeuo/ssh2g_assets/`:
+
+```sh
+python3 packaging/ssh1g/build.py \
+  --bundle /path/to/restored-2.1.1-bundle \
+  --dropbear-source packaging/ssh1g/sources/dropbear-2026.94.tar.bz2 \
+  --dash-source packaging/ssh1g/sources/dash-0.5.13.5.tar.gz \
+  --ld build/ssh-toolchain/cctools/ld64/src/ld/ld \
+  --sdk /Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk \
+  --work build/ssh2g-assets
+```
+
+The checked-in 2G binaries were built with Apple Clang 21.0.0 and the macOS 14.5 SDK's C headers (a clean rebuild
+reproduced them byte for byte). With that SDK the 1G recipe produces different bytes than the checked-in 1G
+binaries, which were built with the 13.3 SDK; the 1G output of this recipe is unchanged by the 2G additions.
+
+What differs from the 1G build:
+
+- 2.x's libSystem only exports the 64-bit-inode, UNIX03 interfaces, under plain symbol names. That is the SDK
+  headers' default for arm, so `cc.py` drops the 1G's legacy-ABI defines. A 1G binary misreads every `stat`
+  there (Dropbear then refuses `/var/root` as insecurely owned).
+- From 2.0, dyld runs libSystem's initializer before `start`, so `compat.c` skips the 1.x Mach/thread and delayed
+  module initialization (`SKEUO_LIBSYSTEM_INITIALIZES`). The classic lazy-binding helper in `crt.S` still works on
+  2.1.1 through 4.0.
+- 2.x's kernel kills pages without a code signature, and only understands SHA-1 CodeDirectories. `codesign.py`
+  appends a deterministic ad-hoc signature (CodeDirectory version 0x20001 and an empty requirements set, as classic
+  ldid wrote). AMFI accepts it with Skeuo's boot arguments: the emulator's 2.1.1 defaults, and
+  `amfi_allow_any_signature=1` with the other arguments of `activation.BOOT_ARGS` for 2.2 and later.
+
+Tested by fresh `skeuo restore`s of 2.1.1, 2.2 and 4.0 (3.0's IPSW isn't public, so 3.0 isn't enabled). Changes to
+the 2G assets need the same USB login test on those firmwares.

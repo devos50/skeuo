@@ -45,8 +45,10 @@ DEVICE_CA_CERT = "/System/Library/Lockdown/iPhoneDeviceCA.pem"
 # expired device certificate, but its lockdownd ignores the device certificate on that path ("For Timberline")
 FACTORY_ACTIVATION_CERT = "/System/Library/Lockdown/FactoryActivation.pem"
 LOCKDOWND = "/usr/libexec/lockdownd"
-# the kernel arguments that turn off code signing enforcement (AMFI), for the patched lockdownd
-BOOT_ARGS = "amfi=0xff cs_enforcement_disable=1"
+# the kernel arguments that turn off code signing enforcement (AMFI), for the patched lockdownd and ad-hoc signed
+# binaries such as ssh.py's. 2.2's AMFI ignores the first two for ad-hoc signatures and needs
+# amfi_allow_any_signature=1, which the emulator's 2.1.1 defaults also pass.
+BOOT_ARGS = "amfi=0xff cs_enforcement_disable=1 amfi_allow_any_signature=1"
 # Where verify_activation_record calls the device certificate check (SecTrustEvaluate under a policy that pins Apple's
 # root) is in the firmware's entry of the device profile (lockdownd_certificate_check). It becomes "mov r0, #0", i.e.
 # verified.

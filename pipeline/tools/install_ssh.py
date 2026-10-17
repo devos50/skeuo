@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Install the same SSH setup as restore into an existing, powered-off 4B1 bundle."""
+"""Install the same SSH setup as restore into an existing, powered-off bundle (see skeuo/ssh.py for the firmware)."""
 import argparse
 import os
 import sys
 import tempfile
 
-# This directory also has dis.py; do not let it shadow Python's stdlib dis.
-sys.path[0] = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-from skeuo import nand, ssh1g
+sys.path[0] = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+from skeuo import nand, ssh
 from skeuo.bundle import Bundle, BundleError
 
 
@@ -16,9 +15,10 @@ def main():
     parser.add_argument('bundle')
     args = parser.parse_args()
     bundle = Bundle.open(args.bundle)
-    if bundle.profile.product != 'iPod1,1' or bundle.info['firmware']['build'] != '4B1':
-        parser.error('SSH installation is tested only for iPod1,1 1.1.5 (4B1)')
-    ssh1g.check_available()
+    product, build = bundle.profile.product, bundle.info['firmware']['build']
+    if not ssh.supported(product, build):
+        parser.error('SSH installation is not tested for %s %s' % (product, build))
+    ssh.check_available(product)
     bundle.lock()
     try:
         if bundle.suspended:
@@ -34,7 +34,7 @@ def main():
                 with open(images[n], 'wb') as stream:
                     stream.truncate(size * page)
                 nand.copy_regions(bundle.disk, images[n], start * page, 0, size * page)
-            ssh1g.install(images[1], images[2], os.path.join(bundle.path, 'ssh'))
+            ssh.install(product, images[1], images[2], os.path.join(bundle.path, 'ssh'))
             for n, image in images.items():
                 start, size = parts[n]
                 nand.copy_regions(image, bundle.disk, 0, start * page, size * page)

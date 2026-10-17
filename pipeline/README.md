@@ -38,9 +38,9 @@ sold through the iTunes Store, and its IPSW was never on a public URL, so a 3.0 
    ramdisk and kernelcache, then `restored` partitions the NAND, writes the root filesystem it gets through asr and
    flashes the NOR images from the IPSW (`restore.py`, `restored.py`). This takes about a minute.
 3. Prepares the restored filesystems for the emulator (`prepare.py`): SpringBoard draws in software
-   (`LK_ENABLE_MBX2D=0`), and the device is activated (`activation.py`). For iPod1,1 1.1.5, this also seeds the
-   initial data tree, repairs its USB kernel notifier, and installs the SSH server, shell and per-bundle keys
-   described below. This firmware's NOR programming takes about six minutes.
+   (`LK_ENABLE_MBX2D=0`), and the device is activated (`activation.py`). It also installs the SSH server, shell and
+   per-bundle keys described below, on the firmware they were tested with. For iPod1,1 1.1.5, this also seeds the
+   initial data tree and repairs its USB kernel notifier. This firmware's NOR programming takes about six minutes.
 
 The bundle keeps the disk as `disk.img`, a sparse raw disk image that macOS can mount
 (`hdiutil attach -imagekey diskimage-class=CRawDiskImage disk.img`). While the emulator runs, the NAND pages iOS
@@ -120,8 +120,10 @@ From iPhone OS 3.0 on, Security pins the root of the device certificate's chain 
 certificate no longer verifies. For 3.0 and 4.0, `prepare` therefore patches lockdownd: `verify_activation_record`
 treats the device certificate as verified, while the account token still has to carry Skeuo's signature. The patched
 lockdownd no longer matches its code signature, so `run` boots these devices with code signing enforcement off
-(`amfi=0xff cs_enforcement_disable=1`; the kernel honours them because the emulated chip is a non-production one).
-That also lets unsigned and modified binaries run.
+(`amfi=0xff cs_enforcement_disable=1 amfi_allow_any_signature=1`; the kernel honours them because the emulated chip
+is a non-production one). 2.2 boots with the same arguments; its AMFI needs the last one to accept an ad-hoc signature.
+That also lets modified and ad-hoc signed binaries run (2.x still kills pages without any signature). A device suspended
+before `amfi_allow_any_signature=1` was added has to be cold booted once.
 
 Without the patch, lockdownd doesn't check that the device certificate belongs to the device, so a certificate Apple
 issued to any device works too, next to Skeuo's signed account token. Pass one to `restore`, as a PEM file or as the
@@ -164,12 +166,11 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
   a device certificate from Apple). Bundles restored before the lockdownd patch stay as they were: 3.0 Unactivated
   but usable, 4.0 on the "Connect to iTunes" screen.
 - After a resume, the guest's calendar lags by the time the device was suspended (until it reboots).
-- 2.2's AMFI doesn't report the boot arguments (3.0's and 4.0's log that enforcement is off); whether unsigned
-  binaries run on 2.2 is untested.
 
-## USB SSH on the iPod touch 1G
+## USB SSH
 
-Restoring iPod1,1 1.1.5 (4B1) also installs source-built Dropbear and a POSIX shell. It creates a separate
+Restoring iPod1,1 1.1.5 (4B1), or iPod2,1 2.1.1 (5F138), 2.2 (5G77a) or 4.0 (8A293), also installs source-built
+Dropbear and a POSIX shell (2G 3.0 is untested, so it gets none). It creates a separate
 client and host Ed25519 key for each bundle in `<bundle>/ssh/`; the client private key stays on the host.
 Root login uses the generated key. No password or lockdown SSL session is needed. With the bundle running,
 use separate terminals:
@@ -185,13 +186,16 @@ The first SSH connection asks to accept that bundle's host key; its public key i
 the bundle. launchd listens on device loopback port 22 and starts Dropbear on demand. Skeuo's usbmuxd and
 `iproxy` carry the connection over the emulated USB link.
 
-For a 4B1 bundle restored before this preparation step, stop it and run from the repository root:
+For a bundle of that firmware restored before this preparation step, power it off and run from the repository
+root:
 
 ```sh
-python3 pipeline/tools/1g/install_ssh.py /path/to/bundle
+python3 pipeline/tools/install_ssh.py /path/to/bundle
 ```
 
-The shell has POSIX builtins; coreutils, SCP and SFTP are not installed by this checkpoint. The 2G restore
-path does not install SSH yet. Source/build instructions and compatibility details are in
+The shell has POSIX builtins; coreutils, SCP and SFTP are not installed. The 1G and 2G each have their own build
+of the same sources (`skeuo/ssh1g_assets`, `skeuo/ssh2g_assets`): 2.x's libSystem only has the 64-bit-inode
+stat ABI, and its kernel needs a (SHA-1, ad-hoc) code signature. Source/build instructions and compatibility
+details are in
 [`packaging/ssh1g/README.md`](../packaging/ssh1g/README.md). The runtime assets include licenses and their full
 free-software source kit; no Apple library or firmware is distributed with them.
