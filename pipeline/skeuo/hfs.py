@@ -33,8 +33,8 @@ def check_supported():
         raise HFSError("changing the restored filesystems needs macOS (hdiutil) for now")
 
 
-def attach(image, mountpoint, readonly=False):
-    args = ["hdiutil", "attach", "-nobrowse", "-owners", "off", "-mountpoint", mountpoint]
+def attach(image, mountpoint, readonly=False, owners=False):
+    args = ["hdiutil", "attach", "-nobrowse", "-owners", "on" if owners else "off", "-mountpoint", mountpoint]
     if readonly:
         args.append("-readonly")
     if not image.endswith(".dmg"):
@@ -52,9 +52,10 @@ def detach(mountpoint):
 
 
 @contextlib.contextmanager
-def mounted(image, readonly=False):
+def mounted(image, readonly=False, owners=False):
+    """owners: honour the filesystem's owners (to read them; writing then needs the permissions they give)."""
     mountpoint = tempfile.mkdtemp(prefix="skeuo-mount.")
-    attach(image, mountpoint, readonly)
+    attach(image, mountpoint, readonly, owners)
     try:
         yield mountpoint
     finally:
@@ -64,24 +65,45 @@ def mounted(image, readonly=False):
 
 def chown_root(image, entries):
     """entries: list of (name, parent directory node ID, record type)."""
+    chown(image, [entry + (0, 0) for entry in entries])
+
+
+def catalog_extents(data):
+    """The byte ranges of the catalog file, from the volume header; the whole image if they aren't all there."""
+    header = 1024
+    if data[header:header + 2] not in (b"H+", b"HX"):
+        return [(0, len(data))]
+    block_size, = struct.unpack_from(">I", data, header + 0x28)
+    total_blocks, = struct.unpack_from(">I", data, header + 0x110 + 12)
+    extents = [struct.unpack_from(">II", data, header + 0x110 + 16 + 8 * i) for i in range(8)]
+    if sum(count for _, count in extents) != total_blocks:
+        return [(0, len(data))]  # more extents in the overflow file
+    return [(start * block_size, (start + count) * block_size) for start, count in extents if count]
+
+
+def chown(image, entries):
+    """entries: list of (name, parent directory node ID, record type, owner, group)."""
     with open(image, "r+b") as f, mmap.mmap(f.fileno(), 0) as data:
-        # Mapped rather than read, so that large (sparse) partition images do not have to fit in memory.
-        for name, parent, record_type in entries:
+        # Mapped rather than read, so that large (sparse) partition images do not have to fit in memory. Only the
+        # catalog is searched: a whole data partition is gigabytes.
+        extents = catalog_extents(data)
+        for name, parent, record_type, owner, group in entries:
             uname = name.encode("utf-16-be")
             key = struct.pack(">HIH", 6 + len(uname), parent, len(name)) + uname
             matches = []
-            pos = data.find(key)
-            while pos != -1:
-                rec = pos + len(key)
-                if struct.unpack_from(">H", data, rec)[0] == record_type:
-                    matches.append(rec)
-                pos = data.find(key, pos + 1)
+            for start, end in extents:
+                pos = data.find(key, start, end)
+                while pos != -1:
+                    rec = pos + len(key)
+                    if struct.unpack_from(">H", data, rec)[0] == record_type:
+                        matches.append(rec)
+                    pos = data.find(key, pos + 1, end)
             # Unused B-tree node space can hold stale copies of a record, so patch every copy rather than guess
             # which one is live.
             if not matches:
                 raise HFSError("no catalog record for %s in directory %d" % (name, parent))
             for rec in matches:
-                struct.pack_into(">II", data, rec + OWNER_OFFSET, 0, 0)
+                struct.pack_into(">II", data, rec + OWNER_OFFSET, owner, group)
         data.flush()
 
 

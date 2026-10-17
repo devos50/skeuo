@@ -513,7 +513,7 @@ What changed:
   from the user's IPSW. The rebuilt cache uses literal LZSS and an unsigned plaintext 8900 container accepted by
   the bootrom stand-in; it is larger (about 6.8 MB). Neither firmware nor a device image is committed or shipped.
   The same repair function can be called by the future restore preparation step.
-- The experimental `ipod1_1` profile permits running hand-built bundles, with no Wi-Fi, suspend or bootrom-dump
+- The experimental `ipod1_1` profile permits running hand-built bundles, with no Wi-Fi, suspend (enabled later) or bootrom-dump
   support advertised. Its restore strategy is explicitly unavailable until checkpoint 2. `nand-epoch` is omitted
   for legacy NAND. Its 1.1.5 catalog URL points to Apple (size/SHA-1 match the supplied IPSW). The host now folds the bank*.data/spare/state legacy overlay, including the formatter's block-5
   replacement of the final BBT block; the logical page and write-age metadata match the 2G's format.
@@ -710,6 +710,42 @@ two `skeuo run` cold boots passed root command execution, a PTY command, an inte
 (`SSH_TTY=/dev/ttys000`), an exact 65,792-byte round trip and unauthorized-key rejection; the second boot
 checked the host key strictly against the first's. Generated bundles and logs are in `build/ssh-2g/` (untracked).
 
+### Suspend and resume on the 1G (2026-10-17)
+
+The iPod1,1 profile has the `suspend` capability. What it took:
+
+- **The NOR's block backend** (emulator). The machine opened `nor.bin` with `blk_new_open()` and handed it to
+  `pflash_cfi02`. qdev can't refer to an anonymous backend, so the flash device wrapped its node in a second backend
+  of its own, and the first one kept write permission without a device. QEMU refuses to inactivate such a backend,
+  so every suspend failed with "Block inactivate failed during switchover" and powered off instead. The machine now
+  drops its reference once the device holds the node (the device's backend already has the write cache on).
+  `pflash_cfi02` has no VMState of its own, but its contents are a RAM-backed ROM device that migration saves; only
+  a suspend in the middle of a program or erase command sequence would lose that command.
+- **The machine's VMState** (emulator): the ARM1176 peripheral port remap register, like the 2G's.
+- **The clock** (emulator). The 1.1.5 kernel reads the PCF50635's BCD clock registers (0x59-0x5f: seconds, minutes,
+  hours, weekday, day, month, year from 2000; traced), but the shared PMU model served the 2G D1759's seconds
+  counter at 0x5c, which read as 2003-07-17. The model's `rtc-bcd` property, set by the 1G machine, serves the
+  QEMU RTC there, latched when the seconds are read.
+- **The seeded data volume's owners** (pipeline). `seed_legacy_data` copied 1.1.5's `/private/var` through a mount
+  that ignores owners, so everything ended up owned by the host user (e.g. 502:20) instead of mobile (501) or root.
+  SpringBoard, as mobile, then couldn't create `/var/mobile/Library/Calendar/Calendar.sqlitedb`. After every
+  resume it reschedules calendar alarms (`_adjustMidnightTimerAfterSleep` → `_CalAlarmEngineRescheduleTimer` →
+  `CPSqliteConnectionBegin` on a NULL connection) and crashed, so SpringBoard restarted with its first-use tip.
+  The IPSW's owners are now read through a second, owner-honouring mount and written into the catalog
+  (`hfs.chown`). `hfs.chown` searches only the catalog file's extents: a whole data partition is 7.3 GB, which
+  took about 3 s per record. Bundles restored before this keep the wrong owners and crash on resume; restore them
+  again.
+
+Validation: a fresh restore booted, suspended, and resumed four times. Each resume reached SSH in about 3.5 s (the
+dropbear PIDs continued, no boot messages), taps worked (an app opened and stayed open across resumes), the clock
+showed local time and no crash report appeared. Data written before a suspend survived a later resume, power-off
+(folding the overlay) and cold boot. A 2.1.1 bundle on the same QEMU still boots, suspends and resumes with working
+touch. 21 Python tests and the 1G hardware test pass.
+
+Not done: restore speed. Of a 326 s restore, 301 s is between "flash NOR" and "set boot stage". A likely cause is
+that `pflash_cfi02` writes every programmed 16-bit word to `nor.bin` with a synchronous `blk_pwrite`; buffering the
+writes and flushing them on a timer, at VM stop and before a suspend would be the thing to measure.
+
 ## App
 
 - The create dialog asks for the device first (from `device_types`), then the firmware. With one supported device
@@ -754,7 +790,8 @@ checked the host key strictly against the first's. Generated bundles and logs ar
    wrangler (a race, see "The 1.1.5 kernel").
 4. **The 1G's NAND as a disk image** with `nand-disk`/`nand-overlay`, and VMState for the 1G models: suspend works.
    The presentation and options are done (step 3), overlay writes came with the ADM, and legacy folding in
-   `nand.py` is done with USB checkpoint 1 (2026-10-16). Suspend/resume on the 1G is not validated yet.
+   `nand.py` is done with USB checkpoint 1 (2026-10-16). Suspend/resume validated and enabled (2026-10-17), see
+   "Suspend and resume on the 1G".
 5. **The USB link on the 1G**, then the 1.1.5 restore and SSH, with the iPod1,1 profile, `experimental`.
    USB checkpoint reached (2026-10-16): the original device tree, a repaired 4B1 kernel and hand-built NAND/NOR
    boot to SpringBoard through `skeuo run`; `ideviceinfo -s` answers through its usbmuxd. Plain `ideviceinfo`

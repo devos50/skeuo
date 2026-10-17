@@ -1,4 +1,4 @@
-"""iPod touch 1G, n45ap. Restore and USB on user-supplied 1.1.5 firmware.
+"""iPod touch 1G, n45ap. Restore, USB and suspend/resume on user-supplied 1.1.5 firmware.
 
 The emulator currently boots through its bootrom stand-in only.
 """
@@ -24,6 +24,6 @@ PROFILE = Profile(
                     meta_size=12, pages_per_block=128, num_ce=8,
                     blocks_per_ce=4096, planes_per_ce=1),
     restore="restored",
-    capabilities=frozenset({"audio", "accelerometer", "usbmux"}),
+    capabilities=frozenset({"audio", "accelerometer", "suspend", "usbmux"}),
     support="experimental",
 )

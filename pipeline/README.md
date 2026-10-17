@@ -166,6 +166,8 @@ python3 -m skeuo run ~/Skeuo/ipod-2.2      # or ~/Skeuo/ipod-2.1.1, ~/Skeuo/ipod
   a device certificate from Apple). Bundles restored before the lockdownd patch stay as they were: 3.0 Unactivated
   but usable, 4.0 on the "Connect to iTunes" screen.
 - After a resume, the guest's calendar lags by the time the device was suspended (until it reboots).
+- iPod1,1 bundles restored before 2026-10-17 have a data volume owned by the host user, so SpringBoard can't create
+  its Calendar database and restarts after every resume. Restore them again.
 
 ## USB SSH
 

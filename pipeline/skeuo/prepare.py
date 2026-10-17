@@ -16,6 +16,7 @@ of the root filesystem image. So this changes the partitions of the restored dis
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import tempfile
 
@@ -45,8 +46,9 @@ LOCKDOWND_MODE = 0o755
 def seed_legacy_data(source, data_image, build, workdir):
     """1.x removes /private/var from the system but doesn't seed its new data volume.
 
-    Copy the original tree from the user's IPSW, retaining modes and symlinks,
-    just as make_nand_disk_1g does for a hand-built image.
+    Copy the original tree from the user's IPSW, retaining modes, symlinks and owners. The copy goes through a mount
+    that ignores owners, so the owners (mobile's home and the system's directories) are then set in the catalog.
+    Without them SpringBoard, as mobile, can't create its Calendar database, and crashes rescheduling alarms.
     """
     from .firmware1g import ROOTFS_KEYS
     if not source or not shutil.which("vfdecrypt"):
@@ -55,6 +57,15 @@ def seed_legacy_data(source, data_image, build, workdir):
         decrypted = os.path.join(work, "rootfs.dmg")
         subprocess.run(["vfdecrypt", "-i", source, "-k", ROOTFS_KEYS[build], "-o", decrypted],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Owners as the IPSW has them. Honouring them hides the inside of directories only their owner may read
+        # (1.1.5: mobile's empty Media), whose entries then take the directory's owner.
+        owners = {}
+        with hfs.mounted(decrypted, readonly=True, owners=True) as system:
+            source_var = os.path.join(system, "private/var")
+            for dirpath, dirnames, filenames in os.walk(source_var):
+                for name in dirnames + filenames:
+                    st = os.lstat(os.path.join(dirpath, name))
+                    owners[os.path.relpath(os.path.join(dirpath, name), source_var)] = (st.st_uid, st.st_gid)
         with hfs.mounted(decrypted, readonly=True) as system, hfs.mounted(data_image) as data:
             source_var = os.path.join(system, "private/var")
             # This is a never-booted data volume. Replace seed entries instead
@@ -66,6 +77,17 @@ def seed_legacy_data(source, data_image, build, workdir):
                 elif os.path.lexists(dest):
                     os.unlink(dest)
             shutil.copytree(source_var, data, symlinks=True, dirs_exist_ok=True)
+            entries = []
+            for dirpath, dirnames, filenames in os.walk(source_var):
+                for name in dirnames + filenames:
+                    rel = os.path.relpath(os.path.join(dirpath, name), source_var)
+                    owner = rel
+                    while owner and owner not in owners:
+                        owner = os.path.dirname(owner)
+                    copied = os.path.join(data, rel)
+                    record = hfs.FOLDER_RECORD if stat.S_ISDIR(os.lstat(copied).st_mode) else hfs.FILE_RECORD
+                    entries.append((name, os.lstat(os.path.dirname(copied)).st_ino, record) + owners.get(owner, (0, 0)))
+        hfs.chown(data_image, entries)
 
 
 def prepare(disk, workdir, device, profile, build, lockdown=None, device_certificate=None, log=print,
